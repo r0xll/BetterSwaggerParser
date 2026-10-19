@@ -1,0 +1,39 @@
+{
+  "swagger": "2.0",
+  "info": { "title": "Petstore 2.0", "version": "1.0" },
+  "host": "api.example.com",
+  "basePath": "/v2",
+  "schemes": ["https"],
+  "consumes": ["application/json"],
+  "securityDefinitions": {
+    "api_key": { "type": "apiKey", "name": "X-API-Key", "in": "header" }
+  },
+  "paths": {
+    "/pets/{petId}": {
+      "get": {
+        "summary": "Get a pet",
+        "security": [{ "api_key": [] }],
+        "parameters": [
+          { "name": "petId", "in": "path", "required": true, "type": "integer" },
+          { "name": "verbose", "in": "query", "required": false, "type": "boolean" }
+        ]
+      }
+    },
+    "/pets": {
+      "post": {
+        "summary": "Create a pet",
+        "parameters": [
+          { "name": "body", "in": "body", "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "example": "Rex" },
+                "age": { "type": "integer" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+openapi: 3.0.0
+info:
+  title: External ref
+  version: "1.0"
+servers:
+  - url: https://ext.example.com
+paths:
+  /x:
+    post:
+      summary: Uses an external ref
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: 'https://attacker.example.net/evil.yaml#/Pwned'
