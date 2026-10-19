@@ -59,11 +59,29 @@ Requires JDK 21.
 
 The self-contained extension jar is written to
 `build/libs/BetterSwaggerParser-<version>.jar`. GitHub Actions builds and tests
-it on every push and uploads the jar as a workflow artifact.
+it on every push and uploads the jar as a workflow artifact
+(`.github/workflows/build.yml`).
+
+## Releases
+
+Tagged versions are published automatically to
+[GitHub Releases](https://github.com/r0xll/BetterSwaggerParser/releases) with the
+built jar attached (`.github/workflows/release.yml`). To cut a release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The release workflow builds `BetterSwaggerParser-1.0.0.jar` (the jar version
+tracks the tag via `-PreleaseVersion`), creates the release, generates notes, and
+attaches the jar. You can also trigger it manually from the **Actions** tab
+(*release* → *Run workflow*) by entering a version.
 
 ## Install in Burp
 
-1. Build the jar (or download it from the latest CI run's artifacts).
+1. Download the jar from the [latest release](https://github.com/r0xll/BetterSwaggerParser/releases/latest)
+   (or build it, or grab it from a CI run's artifacts).
 2. Burp → **Extensions** → **Add** → Extension type **Java** → select the jar.
 3. Open the **BetterSwaggerParser** tab, load a spec, pick a base URL, and send
    endpoints wherever you need them.

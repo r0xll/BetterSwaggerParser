@@ -3,7 +3,9 @@ plugins {
 }
 
 group = "io.github.r0xll"
-version = "1.0.0"
+// Overridable from CI so the jar name matches the release tag, e.g.
+// `./gradlew build -PreleaseVersion=1.2.3`. Defaults to the baseline version.
+version = (findProperty("releaseVersion") as String? ?: "1.0.0")
 
 java {
     toolchain {
