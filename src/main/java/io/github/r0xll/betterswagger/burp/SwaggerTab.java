@@ -5,6 +5,7 @@ import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import io.github.r0xll.betterswagger.core.ApiSpec;
 import io.github.r0xll.betterswagger.core.Endpoint;
+import io.github.r0xll.betterswagger.core.OpenApiExporter;
 import io.github.r0xll.betterswagger.core.ParseResult;
 import io.github.r0xll.betterswagger.core.SpecException;
 import io.github.r0xll.betterswagger.core.SpecLoader;
@@ -69,6 +70,9 @@ final class SwaggerTab {
     private final JTextArea previewArea = new JTextArea();
     private final JTextArea warningsArea = new JTextArea(4, 40);
     private final JLabel status = new JLabel("No spec loaded.");
+
+    private final OpenApiExporter exporter = new OpenApiExporter();
+    private ApiSpec currentSpec;
 
     SwaggerTab(MontoyaApi api, BackgroundWorker worker, RequestDispatcher dispatcher) {
         this.api = api;
@@ -166,6 +170,7 @@ final class SwaggerTab {
         panel.add(button("Send to Organizer", this::sendSelectedToOrganizer));
         panel.add(button("Add to Site map", this::sendSelectedToSiteMap));
         panel.add(button("Active scan (Pro)", this::sendSelectedToScanner));
+        panel.add(button("Export as OpenAPI", this::exportAsOpenApi));
         panel.add(status);
         return panel;
     }
@@ -238,6 +243,7 @@ final class SwaggerTab {
 
     private void applyParseResult(ParseResult result) {
         ApiSpec spec = result.spec();
+        currentSpec = spec;
         tableModel.setEndpoints(spec.endpoints());
         baseUrlBox.setModel(new DefaultComboBoxModel<>(spec.baseUrls().toArray(new String[0])));
         if (!spec.baseUrls().isEmpty()) {
@@ -389,6 +395,47 @@ final class SwaggerTab {
             }
         }
         return requests;
+    }
+
+    /**
+     * Export the loaded spec (or the current selection) as an OpenAPI 3.0 JSON
+     * document, for feeding into Burp's "Import API definition" API scan. Building
+     * and file I/O run on the background worker (BApp rule 3).
+     */
+    private void exportAsOpenApi() {
+        if (currentSpec == null || currentSpec.endpoints().isEmpty()) {
+            showError("Load a spec first.");
+            return;
+        }
+        // Export the selection if the user has one, otherwise the whole spec.
+        List<Endpoint> selected = selectedEndpoints();
+        List<Endpoint> toExport = selected.isEmpty() ? currentSpec.endpoints() : selected;
+        String baseUrl = currentBaseUrl();
+
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export as OpenAPI");
+        String suggested = (currentSpec.title().isBlank() ? "api" : currentSpec.title())
+                .replaceAll("[^A-Za-z0-9._-]", "_");
+        chooser.setSelectedFile(new java.io.File(suggested + "-openapi.json"));
+        int result = chooser.showSaveDialog(api.userInterface().swingUtils().suiteFrame());
+        if (result != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        var path = chooser.getSelectedFile().toPath();
+
+        // Snapshot the model before leaving the EDT so the worker touches no Swing state.
+        ApiSpec spec = currentSpec;
+        List<Endpoint> endpoints = new ArrayList<>(toExport);
+        int count = endpoints.size();
+        worker.submit("export OpenAPI", () -> {
+            try {
+                String json = exporter.toJson(spec, baseUrl, endpoints);
+                Files.writeString(path, json);
+                setStatus("Exported " + count + " endpoint(s) to " + path.getFileName());
+            } catch (IOException ex) {
+                showError("Could not write OpenAPI file: " + ex.getMessage());
+            }
+        });
     }
 
     private boolean validateSelection(List<Endpoint> selected, String baseUrl) {

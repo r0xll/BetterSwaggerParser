@@ -19,6 +19,10 @@ surface through Repeater, Intruder, Organizer, the site map and the Scanner.
 - **Request preview** and one-click **Send to Repeater / Intruder / Organizer**,
   **Add to Site map** (issued through Burp networking), and **Active scan**
   (Burp Suite Professional).
+- **Export as OpenAPI**: write the loaded spec — or just the selected endpoints —
+  back out as a normalized OpenAPI 3.0 JSON document, with `servers` pinned to the
+  chosen base URL. Feed it into Burp's **Import API definition** for an API-only
+  scan. A Swagger 2.0 input is up-converted to OpenAPI 3.0 on export.
 - **Passive detection** of exposed API definitions: responses that are Swagger /
   OpenAPI documents are flagged as an informational scan issue (no extra traffic).
 
