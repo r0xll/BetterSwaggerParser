@@ -1,0 +1,52 @@
+openapi: 3.0.3
+info:
+  title: Petstore 3.0
+  version: "1.0"
+servers:
+  - url: https://api.example.com/v3
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: Fluffy
+        tag:
+          type: string
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      summary: List pets
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+    post:
+      summary: Create a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Pet'
+  /pets/{id}:
+    get:
+      summary: Get pet by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer

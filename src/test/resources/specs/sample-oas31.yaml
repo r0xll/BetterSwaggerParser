@@ -1,0 +1,20 @@
+openapi: 3.1.0
+info:
+  title: Nullable 3.1
+  version: "1.0"
+servers:
+  - url: https://v31.example.com
+paths:
+  /things:
+    post:
+      summary: Make a thing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: [string, "null"]
+                count:
+                  type: integer
