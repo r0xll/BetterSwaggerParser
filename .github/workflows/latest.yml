@@ -1,0 +1,49 @@
+name: latest
+
+# Rolling "latest" prerelease: every push to main rebuilds the extension and
+# republishes it as a single prerelease tagged `latest`, so there is always one
+# up-to-date development build to download. Stable, versioned releases are still
+# cut separately by release.yml when a v* tag is pushed.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# If several pushes land together, only publish the newest; cancel superseded runs.
+concurrency:
+  group: latest-release
+  cancel-in-progress: true
+
+jobs:
+  latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon --stacktrace
+
+      - name: Republish rolling latest prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Move the rolling tag/release to this commit: remove the old one
+          # (if any), then recreate it at the current SHA with the fresh jar.
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest build/libs/*.jar \
+            --title "Latest (main)" \
+            --notes "Rolling development build from ${GITHUB_SHA} (built $(date -u +%Y-%m-%dT%H:%M:%SZ)). For a stable versioned build, see the tagged releases." \
+            --prerelease \
+            --target "${GITHUB_SHA}"

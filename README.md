@@ -82,6 +82,14 @@ tracks the tag via `-PreleaseVersion`), creates the release, generates notes, an
 attaches the jar. You can also trigger it manually from the **Actions** tab
 (*release* → *Run workflow*) by entering a version.
 
+### Rolling `latest` build
+
+Every push to `main` also republishes a single prerelease tagged
+[`latest`](https://github.com/r0xll/BetterSwaggerParser/releases/tag/latest) with
+the freshly built jar (`.github/workflows/latest.yml`), so there is always an
+up-to-date development build to download. It is marked *pre-release* and its tag
+moves with each push; use a `v*` tagged release for a stable, pinned version.
+
 ## Install in Burp
 
 1. Download the jar from the [latest release](https://github.com/r0xll/BetterSwaggerParser/releases/latest)
