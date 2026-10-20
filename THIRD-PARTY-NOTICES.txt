@@ -1,0 +1,40 @@
+BetterSwaggerParser bundles the following third-party components in its
+distributed jar. Each is used under the Apache License, Version 2.0, a copy of
+which is included as the LICENSE file in this repository and in the jar's
+META-INF directory.
+
+================================================================================
+Jackson (com.fasterxml.jackson.core:jackson-databind,
+         com.fasterxml.jackson.core:jackson-core,
+         com.fasterxml.jackson.core:jackson-annotations,
+         com.fasterxml.jackson.dataformat:jackson-dataformat-yaml)
+--------------------------------------------------------------------------------
+# Jackson JSON processor
+
+Jackson is a high-performance, Free/Open Source JSON processing library.
+It was originally written by Tatu Saloranta (tatu.saloranta@iki.fi), and has
+been in development since 2007.
+It is currently developed by a community of developers.
+
+## Copyright
+
+Copyright 2007-, Tatu Saloranta (tatu.saloranta@iki.fi)
+
+## Licensing
+
+Jackson 2.x core and extension components are licensed under Apache License 2.0.
+
+================================================================================
+SnakeYAML (org.yaml:snakeyaml)
+--------------------------------------------------------------------------------
+Copyright (c) 2008, SnakeYAML
+
+Licensed under the Apache License, Version 2.0.
+Project home: https://bitbucket.org/snakeyaml/snakeyaml
+
+================================================================================
+Montoya API (net.portswigger.burp.extensions:montoya-api)
+--------------------------------------------------------------------------------
+Referenced at compile time only (Gradle compileOnly) and provided by Burp Suite
+at runtime. It is NOT bundled in this extension's distributed jar.
+================================================================================

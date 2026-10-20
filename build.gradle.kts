@@ -43,8 +43,16 @@ tasks.test {
 tasks.jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    // Drop signature files and module descriptors. We also drop the dependencies'
+    // own META-INF/LICENSE|NOTICE because, merged into one jar, only one of each
+    // colliding path would survive; instead we ship our own curated notices below
+    // so the Apache-2.0 attribution for every bundled component is complete.
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/LICENSE*", "META-INF/NOTICE*")
     exclude("module-info.class", "META-INF/versions/**/module-info.class")
+
+    // Apache-2.0 compliance: carry the license and the third-party notices for
+    // the bundled dependencies (Jackson, SnakeYAML) inside the distributed jar.
+    from(listOf("LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.txt")) { into("META-INF") }
 }
 
 tasks.build {
