@@ -98,6 +98,16 @@ moves with each push; use a `v*` tagged release for a stable, pinned version.
 3. Open the **BetterSwaggerParser** tab, load a spec, pick a base URL, and send
    endpoints wherever you need them.
 
+### Burp editions
+
+Works on both **Community** and **Professional**. Parsing, the suite tab,
+context-menu import, request preview, OpenAPI export, and sending to
+Repeater / Intruder / Organizer / Site map all work on Community (Intruder runs
+are throttled there, as usual). The two Scanner-backed features — the **Active
+scan** button and the passive *exposed spec* issue — require **Professional**;
+on Community they are simply unavailable and the extension loads and runs
+normally without them.
+
 ## Tests
 
 ```bash

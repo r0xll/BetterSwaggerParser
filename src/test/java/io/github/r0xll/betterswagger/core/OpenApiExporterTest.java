@@ -80,4 +80,49 @@ class OpenApiExporterTest {
         assertEquals("path", idParam.path("in").asText());
         assertTrue(idParam.path("required").asBoolean());
     }
+
+    @Test
+    void everyRequestBodyHasaTypedSchema() {
+        // Regression: a media type with no schema makes Burp report an "unknown
+        // schema type". Every exported request body must declare a concrete type.
+        for (String fixture : new String[]{"petstore-swagger2.json", "petstore-oas30.yaml"}) {
+            ApiSpec spec = parse(fixture, "https://api.example.com/spec");
+            JsonNode root = loader.load(exporter.toJson(spec, "https://api.example.com", spec.endpoints()));
+            JsonNode paths = root.get("paths");
+            paths.fields().forEachRemaining(pathEntry ->
+                pathEntry.getValue().fields().forEachRemaining(opEntry -> {
+                    JsonNode content = opEntry.getValue().at("/requestBody/content");
+                    content.fields().forEachRemaining(mt -> {
+                        JsonNode type = mt.getValue().at("/schema/type");
+                        assertFalse(type.isMissingNode(),
+                                fixture + " " + pathEntry.getKey() + " body schema missing type");
+                        assertFalse(type.asText().isBlank());
+                    });
+                }));
+        }
+    }
+
+    @Test
+    void jsonObjectBodyInfersObjectSchemaWithProperties() {
+        ApiSpec spec = parse("petstore-oas30.yaml", "https://api.example.com/openapi.yaml");
+        JsonNode root = loader.load(exporter.toJson(spec, "https://api.example.com/v3", spec.endpoints()));
+        JsonNode schema = root.at("/paths/~1pets/post/requestBody/content/application~1json/schema");
+        assertEquals("object", schema.path("type").asText());
+        // Pet.name is a string in the fixture; the inferred schema should type it.
+        assertEquals("string", schema.at("/properties/name/type").asText());
+    }
+
+    @Test
+    void nonJsonBodyInfersStringSchema() {
+        // A form-urlencoded body is stored as a raw string; its schema must still
+        // be concrete (string), not absent.
+        Endpoint form = new Endpoint("POST", "/login", "Log in",
+                java.util.List.of(), java.util.List.of(),
+                "user=admin&pass=secret", "application/x-www-form-urlencoded");
+        ApiSpec spec = new ApiSpec(ApiSpec.Version.OPENAPI_3_0, "Form API",
+                java.util.List.of("https://h.example.com"), java.util.List.of(form));
+        JsonNode root = loader.load(exporter.toJson(spec, "https://h.example.com", spec.endpoints()));
+        JsonNode schema = root.at("/paths/~1login/post/requestBody/content/application~1x-www-form-urlencoded/schema");
+        assertEquals("string", schema.path("type").asText());
+    }
 }

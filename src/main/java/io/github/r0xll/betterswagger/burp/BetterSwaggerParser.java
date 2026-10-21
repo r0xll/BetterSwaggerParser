@@ -30,11 +30,22 @@ public final class BetterSwaggerParser implements BurpExtension {
         // Context-menu import of a captured spec.
         api.userInterface().registerContextMenuItemsProvider(new SpecContextMenu(tab));
 
-        // Passive detection of exposed API definitions (issues no new requests).
-        api.scanner().registerPassiveScanCheck(new SpecScanCheck(), ScanCheckType.PER_REQUEST);
-
-        // Clean unload: terminate background threads (BApp rule 4).
+        // Register the unload handler before anything that might fail, so
+        // background threads are always cleaned up on unload (BApp rule 4).
         api.extension().registerUnloadingHandler(new UnloadHandler(worker));
+
+        // Passive detection of exposed API definitions (issues no new requests).
+        // Burp Scanner is not present in Community Edition, so this registration
+        // may be unavailable there; guard it so the rest of the extension (parsing,
+        // Repeater/Intruder/Organizer/Site map, OpenAPI export) still loads and
+        // works on any edition.
+        try {
+            api.scanner().registerPassiveScanCheck(new SpecScanCheck(), ScanCheckType.PER_REQUEST);
+        } catch (RuntimeException e) {
+            api.logging().logToOutput(NAME + ": passive spec detection is unavailable "
+                    + "(Burp Scanner requires Burp Suite Professional). All other features "
+                    + "remain available.");
+        }
 
         api.logging().logToOutput(NAME + " loaded. Parses Swagger 2.0 / OpenAPI 3.0 / 3.1 "
                 + "definitions into requests. External $refs are never fetched.");
