@@ -107,3 +107,12 @@ moves with each push; use a `v*` tagged release for a stable, pinned version.
 The Burp-independent core (`io.github.r0xll.betterswagger.core`) is covered by
 JUnit 5 tests, including fixtures for Swagger 2.0, OpenAPI 3.0 / 3.1, cyclic and
 external `$ref`s, YAML alias bombs and deeply nested documents.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+This extension bundles Jackson and SnakeYAML (both Apache-2.0) in its distributed
+jar; their notices are reproduced in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)
+and carried inside the jar's `META-INF`. The Montoya API is referenced at compile
+time only and provided by Burp at runtime, so it is not redistributed here.
