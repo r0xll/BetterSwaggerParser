@@ -117,8 +117,15 @@ public final class OpenApiExporter {
         if (endpoint.hasBody()) {
             String contentType = endpoint.requestContentType() == null
                     ? "application/json" : endpoint.requestContentType();
+            JsonNode example = bodyExample(endpoint.requestBody(), contentType);
             ObjectNode media = nf.objectNode();
-            media.set("example", bodyExample(endpoint.requestBody(), contentType));
+            // A media type object needs a schema, or Burp's API scanner reports an
+            // "unknown schema type" and cannot exercise the body. Infer one from the
+            // example value so the body has a concrete, scannable type.
+            media.set("schema", schemaFor(example, 0));
+            if (!example.isNull()) {
+                media.set("example", example);
+            }
             operation.putObject("requestBody").putObject("content").set(contentType, media);
         }
 
@@ -149,6 +156,47 @@ public final class OpenApiExporter {
             }
         }
         return nf.textNode(body);
+    }
+
+    /** Max nesting depth for inferred body schemas (matches ExampleGenerator). */
+    private static final int MAX_SCHEMA_DEPTH = 15;
+
+    /**
+     * Infer a minimal OpenAPI 3.0 schema from an example value, so every exported
+     * request body declares a concrete type. Objects and arrays recurse (bounded by
+     * {@link #MAX_SCHEMA_DEPTH}); anything null, untyped or too deeply nested falls
+     * back to {@code string} so a typeless schema &mdash; which the scanner rejects
+     * as an "unknown schema type" &mdash; is never produced.
+     */
+    private ObjectNode schemaFor(JsonNode value, int depth) {
+        ObjectNode schema = nf.objectNode();
+        if (value == null || value.isNull() || depth > MAX_SCHEMA_DEPTH) {
+            schema.put("type", "string");
+            return schema;
+        }
+        if (value.isObject()) {
+            schema.put("type", "object");
+            ObjectNode properties = nf.objectNode();
+            var fields = value.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                properties.set(entry.getKey(), schemaFor(entry.getValue(), depth + 1));
+            }
+            schema.set("properties", properties);
+        } else if (value.isArray()) {
+            schema.put("type", "array");
+            JsonNode first = value.size() > 0 ? value.get(0) : null;
+            schema.set("items", first == null ? nf.objectNode() : schemaFor(first, depth + 1));
+        } else if (value.isBoolean()) {
+            schema.put("type", "boolean");
+        } else if (value.isIntegralNumber()) {
+            schema.put("type", "integer");
+        } else if (value.isNumber()) {
+            schema.put("type", "number");
+        } else {
+            schema.put("type", "string");
+        }
+        return schema;
     }
 
     private ObjectNode securityScheme(SecurityRequirement sr) {
