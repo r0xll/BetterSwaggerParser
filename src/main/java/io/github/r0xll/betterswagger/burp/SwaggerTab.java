@@ -4,6 +4,9 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import io.github.r0xll.betterswagger.core.ApiSpec;
+import io.github.r0xll.betterswagger.core.AuthProfile;
+import io.github.r0xll.betterswagger.core.AuthValues;
+import io.github.r0xll.betterswagger.core.OAuth2Client;
 import io.github.r0xll.betterswagger.core.Endpoint;
 import io.github.r0xll.betterswagger.core.OpenApiExporter;
 import io.github.r0xll.betterswagger.core.Param;
@@ -87,6 +90,10 @@ final class SwaggerTab {
     private volatile Map<String, String> postmanEnvironment = Map.of();
     private volatile JsonNode lastCollection;
 
+    // Auth profiles: edited and read on the EDT only. Index 0 of the box is "None".
+    private final List<AuthProfile> authProfiles = new ArrayList<>();
+    private final JComboBox<String> authBox = new JComboBox<>(new String[]{"None"});
+
     SwaggerTab(MontoyaApi api, BackgroundWorker worker, RequestDispatcher dispatcher) {
         this.api = api;
         this.worker = worker;
@@ -168,6 +175,12 @@ final class SwaggerTab {
         baseUrlRow.add(new JLabel("Base URL:"));
         baseUrlBox.setEditable(true);
         baseUrlRow.add(baseUrlBox);
+        baseUrlRow.add(new JLabel("Auth:"));
+        authBox.setToolTipText("Auth profile applied to every request; it replaces the document's own auth.");
+        authBox.addActionListener(e -> updatePreview());
+        baseUrlRow.add(authBox);
+        baseUrlRow.add(button("Profiles...", this::openAuthProfiles));
+        baseUrlRow.add(button("Get token", this::refreshActiveToken));
         baseUrlRow.add(new JLabel("Filter:"));
         baseUrlRow.add(filterField);
         filterField.getDocument().addDocumentListener(new SimpleDocListener(this::applyFilter));
@@ -349,7 +362,7 @@ final class SwaggerTab {
         }
         try {
             Endpoint endpoint = paramValues().applyTo(selected.get(0));
-            HttpRequest request = dispatcher.toHttpRequest(endpoint, baseUrl, parseHeaders());
+            HttpRequest request = dispatcher.toHttpRequest(endpoint, baseUrl, parseHeaders(), activeAuth());
             previewArea.setText(request.toString());
             previewArea.setCaretPosition(0);
         } catch (RuntimeException ex) {
@@ -531,6 +544,102 @@ final class SwaggerTab {
         });
     }
 
+    // ---- Auth profiles ---------------------------------------------------
+
+    private AuthProfile activeProfile() {
+        int index = authBox.getSelectedIndex();
+        return index <= 0 || index > authProfiles.size() ? null : authProfiles.get(index - 1);
+    }
+
+    /** Values of the active profile; warns when an OAuth 2.0 token is missing or expired. */
+    private AuthValues activeAuth() {
+        AuthProfile profile = activeProfile();
+        if (profile == null) {
+            return AuthValues.NONE;
+        }
+        if (profile.needsToken(System.currentTimeMillis())) {
+            setStatus("Auth profile \"" + profile.name() + "\" has no valid OAuth 2.0 token: click Get token.");
+        }
+        return profile.values();
+    }
+
+    private void openAuthProfiles() {
+        new AuthProfilesDialog(api.userInterface().swingUtils().suiteFrame(), authProfiles,
+                this::fetchToken, this::setAuthProfiles).setVisible(true);
+    }
+
+    private void setAuthProfiles(List<AuthProfile> profiles) {
+        String active = activeProfile() == null ? null : activeProfile().name();
+        authProfiles.clear();
+        authProfiles.addAll(profiles);
+        authBox.removeAllItems();
+        authBox.addItem("None");
+        int select = 0;
+        for (int i = 0; i < profiles.size(); i++) {
+            authBox.addItem(profiles.get(i).name());
+            if (profiles.get(i).name().equals(active)) {
+                select = i + 1;
+            }
+        }
+        authBox.setSelectedIndex(select);
+        updatePreview();
+    }
+
+    private void refreshActiveToken() {
+        AuthProfile profile = activeProfile();
+        if (profile == null || !profile.type().isOAuth2()) {
+            showError("Select an OAuth 2.0 auth profile first.");
+            return;
+        }
+        fetchToken(profile, updated -> {
+            for (int i = 0; i < authProfiles.size(); i++) {
+                if (authProfiles.get(i).name().equals(updated.name())) {
+                    authProfiles.set(i, authProfiles.get(i).withToken(updated.accessToken(), updated.expiresAtMillis()));
+                }
+            }
+            updatePreview();
+        });
+    }
+
+    /**
+     * Request an OAuth 2.0 token through Burp's networking on the worker (BApp rules 3
+     * and 5) and hand the updated profile back on the EDT. The response is untrusted
+     * and parsed by {@link OAuth2Client}; the token itself is never logged.
+     */
+    private void fetchToken(AuthProfile profile, java.util.function.Consumer<AuthProfile> onSuccess) {
+        String url = profile.tokenUrl();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            showError("The token URL must start with http:// or https://");
+            return;
+        }
+        setStatus("Requesting an OAuth 2.0 token for \"" + profile.name() + "\"...");
+        worker.submit("fetch oauth token", () -> {
+            HttpRequest request = HttpRequest.httpRequestFromUrl(url).withMethod("POST");
+            for (Map.Entry<String, String> h : OAuth2Client.requestHeaders(profile).entrySet()) {
+                request = request.withHeader(h.getKey(), h.getValue());
+            }
+            request = request.withBody(OAuth2Client.requestBody(profile));
+            HttpRequestResponse rr = api.http().sendRequest(request);
+            if (!rr.hasResponse()) {
+                showError("No response from the token endpoint.");
+                return;
+            }
+            short httpStatus = rr.response().statusCode();
+            try {
+                OAuth2Client.Token token = OAuth2Client.parseResponse(rr.response().bodyToString(),
+                        System.currentTimeMillis());
+                AuthProfile updated = profile.withToken(token.accessToken(), token.expiresAtMillis());
+                SwingUtilities.invokeLater(() -> {
+                    onSuccess.accept(updated);
+                    status.setText("Got an OAuth 2.0 token for \"" + profile.name() + "\". "
+                            + AuthProfilesDialog.describeToken(updated));
+                });
+            } catch (SpecException ex) {
+                showError("Token request failed (HTTP " + httpStatus + "): " + ex.getMessage());
+            }
+        });
+    }
+
     private void applyFilter() {
         String text = filterField.getText();
         if (text == null || text.isEmpty()) {
@@ -589,10 +698,11 @@ final class SwaggerTab {
             return;
         }
         Map<String, String> headers = parseHeaders();
+        AuthValues auth = activeAuth();
         int sent = 0;
         for (Endpoint ep : withParamValues(selected)) {
             try {
-                sink.accept(dispatcher.toHttpRequest(ep, baseUrl, headers), ep);
+                sink.accept(dispatcher.toHttpRequest(ep, baseUrl, headers, auth), ep);
                 sent++;
             } catch (RuntimeException ex) {
                 api.logging().logToError("Failed to send " + ep.method() + " " + ep.path()
@@ -609,10 +719,11 @@ final class SwaggerTab {
             return null;
         }
         Map<String, String> headers = parseHeaders();
+        AuthValues auth = activeAuth();
         List<HttpRequest> requests = new ArrayList<>();
         for (Endpoint ep : withParamValues(selected)) {
             try {
-                requests.add(dispatcher.toHttpRequest(ep, baseUrl, headers));
+                requests.add(dispatcher.toHttpRequest(ep, baseUrl, headers, auth));
             } catch (RuntimeException ex) {
                 api.logging().logToError("Failed to build request for "
                         + ep.method() + " " + ep.path(), ex);
