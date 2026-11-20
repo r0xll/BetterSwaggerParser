@@ -264,4 +264,23 @@ class OpenApiExporterTest {
         assertEquals("integer", limit.at("/schema/type").asText());
         assertFalse(limit.has("example"));
     }
+
+    @Test
+    void casingIsLocaleIndependent() {
+        // Under a Turkish default locale "I".toLowerCase() is a dotless "ı", which broke
+        // both the credential-header filter and the OPTIONS operation key.
+        java.util.Locale saved = java.util.Locale.getDefault();
+        java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+        try {
+            Endpoint ep = new Endpoint("OPTIONS", "/p", "", List.of(
+                    new Param("AUTHORIZATION", Param.Location.HEADER, false, "Bearer s3cr3t-token")),
+                    List.of(), null, null);
+            ApiSpec spec = new ApiSpec(ApiSpec.Version.OPENAPI_3_0, "T", List.of(), List.of(ep));
+            String json = exporter.toJson(spec, "https://h.example.com", spec.endpoints());
+            assertFalse(json.contains("s3cr3t-token"), json);
+            assertTrue(loader.load(json).at("/paths/~1p").has("options"), json);
+        } finally {
+            java.util.Locale.setDefault(saved);
+        }
+    }
 }

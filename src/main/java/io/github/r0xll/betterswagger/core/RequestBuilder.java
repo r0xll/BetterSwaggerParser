@@ -48,7 +48,7 @@ public final class RequestBuilder {
     public BuiltRequest build(Endpoint endpoint, String baseUrl, Map<String, String> extraHeaders,
                               AuthValues auth) {
         URI base = URI.create(baseUrl.trim());
-        String scheme = base.getScheme() == null ? "https" : base.getScheme().toLowerCase();
+        String scheme = base.getScheme() == null ? "https" : base.getScheme().toLowerCase(java.util.Locale.ROOT);
         boolean secure = "https".equals(scheme);
         String host = base.getHost();
         if (host == null) {

@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -67,7 +68,7 @@ public final class OpenApiExporter {
             ObjectNode pathItem = paths.has(endpoint.path())
                     ? (ObjectNode) paths.get(endpoint.path())
                     : paths.putObject(endpoint.path());
-            pathItem.set(endpoint.method().toLowerCase(), operation(endpoint, schemes));
+            pathItem.set(endpoint.method().toLowerCase(Locale.ROOT), operation(endpoint, schemes));
         }
 
         if (!schemes.isEmpty()) {
@@ -100,7 +101,7 @@ public final class OpenApiExporter {
                 case COOKIE -> "cookie";
                 case FORM -> null; // folded into the request body, not a parameter
             };
-            if (in == null || ("header".equals(in) && OMITTED_HEADERS.contains(param.name().toLowerCase()))) {
+            if (in == null || ("header".equals(in) && OMITTED_HEADERS.contains(param.name().toLowerCase(Locale.ROOT)))) {
                 continue;
             }
             ObjectNode p = nf.objectNode();
@@ -233,7 +234,7 @@ public final class OpenApiExporter {
         if (body == null) {
             return nf.nullNode();
         }
-        if (contentType.toLowerCase().contains("json")) {
+        if (contentType.toLowerCase(Locale.ROOT).contains("json")) {
             try {
                 return mapper.readTree(body);
             } catch (JsonProcessingException ignored) {
