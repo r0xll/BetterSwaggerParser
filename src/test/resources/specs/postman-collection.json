@@ -1,0 +1,104 @@
+{
+  "info": {
+    "_postman_id": "4f1c9a7e-0000-4000-8000-000000000001",
+    "name": "Pet API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.example.com/v1" },
+    { "key": "petId", "value": "42" }
+  ],
+  "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{token}}", "type": "string" } ] },
+  "event": [ { "listen": "prerequest", "script": { "exec": [ "pm.environment.set('x', 1);" ] } } ],
+  "item": [
+    {
+      "name": "Pets",
+      "item": [
+        {
+          "name": "Get pet",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Debug", "value": "1", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/pets/:petId?verbose=true&q=a%20b",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "pets", ":petId" ],
+              "query": [
+                { "key": "verbose", "value": "true" },
+                { "key": "q", "value": "a%20b" },
+                { "key": "skip", "value": "1", "disabled": true }
+              ],
+              "variable": [ { "key": "petId", "value": "{{petId}}" } ]
+            }
+          }
+        },
+        {
+          "name": "Create pet",
+          "request": {
+            "method": "post",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"name\":\"{{petName}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/pets"
+          }
+        },
+        {
+          "name": "Public",
+          "request": { "method": "GET", "auth": { "type": "noauth" }, "url": "{{baseUrl}}/public/{{tenant}}/info" }
+        }
+      ]
+    },
+    {
+      "name": "Login form",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "user", "value": "a b" },
+            { "key": "pw", "value": "p&w" },
+            { "key": "off", "value": "x", "disabled": true }
+          ]
+        },
+        "url": "https://auth.example.com/login"
+      }
+    },
+    {
+      "name": "Upload",
+      "event": [ { "listen": "test", "script": { "exec": [ "pm.test('ok', () => {});" ] } } ],
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "multipart/form-data" } ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "title", "value": "hi", "type": "text" },
+            { "key": "file", "src": "/home/u/cat.png", "type": "file" }
+          ]
+        },
+        "url": "{{baseUrl}}/upload"
+      }
+    },
+    {
+      "name": "Key in query",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "apikey",
+          "apikey": [
+            { "key": "key", "value": "api_key" },
+            { "key": "value", "value": "{{apiKey}}" },
+            { "key": "in", "value": "query" }
+          ]
+        },
+        "url": "{{baseUrl}}/stats"
+      }
+    },
+    {
+      "name": "Bad method",
+      "request": { "method": "GET / HTTP/1.1\r\nX: y", "url": "{{baseUrl}}/x" }
+    }
+  ]
+}

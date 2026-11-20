@@ -1,0 +1,11 @@
+{
+  "id": "6c2b1e0a-0000-4000-8000-000000000002",
+  "name": "Staging",
+  "values": [
+    { "key": "baseUrl", "value": "https://staging.example.com/v2", "enabled": true },
+    { "key": "token", "value": "s3cr3t-token", "enabled": true, "type": "secret" },
+    { "key": "petName", "value": "Rex", "enabled": true },
+    { "key": "apiKey", "value": "k-123", "enabled": false }
+  ],
+  "_postman_variable_scope": "environment"
+}

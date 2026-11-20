@@ -7,6 +7,8 @@ import io.github.r0xll.betterswagger.core.ApiSpec;
 import io.github.r0xll.betterswagger.core.Endpoint;
 import io.github.r0xll.betterswagger.core.OpenApiExporter;
 import io.github.r0xll.betterswagger.core.Param;
+import io.github.r0xll.betterswagger.core.PostmanParser;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.r0xll.betterswagger.core.ParseResult;
 import io.github.r0xll.betterswagger.core.SpecException;
 import io.github.r0xll.betterswagger.core.SpecLoader;
@@ -76,6 +78,11 @@ final class SwaggerTab {
     private final OpenApiExporter exporter = new OpenApiExporter();
     private ApiSpec currentSpec;
 
+    // Postman state, written on the worker and read on both threads.
+    private final JLabel environmentLabel = new JLabel("No Postman environment");
+    private volatile Map<String, String> postmanEnvironment = Map.of();
+    private volatile JsonNode lastCollection;
+
     SwaggerTab(MontoyaApi api, BackgroundWorker worker, RequestDispatcher dispatcher) {
         this.api = api;
         this.worker = worker;
@@ -122,9 +129,17 @@ final class SwaggerTab {
 
         // File.
         JPanel filePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JButton chooseFile = new JButton("Choose spec file...");
+        JButton chooseFile = new JButton("Choose spec / collection...");
+        chooseFile.setToolTipText("Swagger 2.0, OpenAPI 3.x (JSON/YAML) or a Postman collection (v2.x)");
         chooseFile.addActionListener(e -> chooseFile());
         filePanel.add(chooseFile);
+        JButton chooseEnvironment = new JButton("Postman environment...");
+        chooseEnvironment.setToolTipText("Variables for {{name}} references in a Postman collection. "
+                + "They override the collection's own variables.");
+        chooseEnvironment.addActionListener(e -> chooseFile());
+        filePanel.add(chooseEnvironment);
+        filePanel.add(button("Clear environment", this::clearEnvironment));
+        filePanel.add(environmentLabel);
         sources.addTab("File", filePanel);
 
         // Paste.
@@ -249,15 +264,49 @@ final class SwaggerTab {
         worker.submit("parse text", () -> parseBytes(text.getBytes(java.nio.charset.StandardCharsets.UTF_8), sourceUrl));
     }
 
+    /**
+     * Parse an OpenAPI/Swagger spec, a Postman collection, or a Postman environment
+     * (detected from the content). Runs on the background worker.
+     */
     private void parseBytes(byte[] data, String sourceUrl) {
         try {
-            SpecLoader loader = new SpecLoader();
-            SpecParser parser = new SpecParser();
-            ParseResult result = parser.parse(loader.load(data), sourceUrl);
+            JsonNode root = new SpecLoader().load(data);
+            if (PostmanParser.isEnvironment(root)) {
+                applyEnvironment(PostmanParser.readEnvironment(root), PostmanParser.environmentName(root));
+                return;
+            }
+            ParseResult result;
+            if (PostmanParser.isCollection(root)) {
+                lastCollection = root;
+                result = new PostmanParser().parse(root, postmanEnvironment);
+            } else {
+                lastCollection = null;
+                result = new SpecParser().parse(root, sourceUrl);
+            }
             SwingUtilities.invokeLater(() -> applyParseResult(result));
         } catch (SpecException ex) {
             showError("Failed to parse spec: " + ex.getMessage());
         }
+    }
+
+    /** Use an environment's variables and re-parse the loaded collection with them (worker thread). */
+    private void applyEnvironment(Map<String, String> variables, String name) {
+        postmanEnvironment = Map.copyOf(variables);
+        String label = variables.isEmpty() ? "No Postman environment"
+                : "Environment: " + name + " (" + variables.size() + " variables)";
+        SwingUtilities.invokeLater(() -> environmentLabel.setText(label));
+        JsonNode collection = lastCollection;
+        if (collection != null) {
+            ParseResult result = new PostmanParser().parse(collection, postmanEnvironment);
+            SwingUtilities.invokeLater(() -> applyParseResult(result));
+        } else {
+            setStatus(variables.isEmpty() ? "Postman environment cleared."
+                    : "Loaded Postman environment " + name + "; it applies to the next collection you load.");
+        }
+    }
+
+    private void clearEnvironment() {
+        worker.submit("clear environment", () -> applyEnvironment(Map.of(), ""));
     }
 
     private void applyParseResult(ParseResult result) {

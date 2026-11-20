@@ -10,7 +10,7 @@ import java.util.List;
  */
 public final class ApiSpec {
 
-    public enum Version { SWAGGER_2, OPENAPI_3_0, OPENAPI_3_1 }
+    public enum Version { SWAGGER_2, OPENAPI_3_0, OPENAPI_3_1, POSTMAN_2 }
 
     private final Version version;
     private final String title;
