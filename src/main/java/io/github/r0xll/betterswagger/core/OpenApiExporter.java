@@ -151,12 +151,15 @@ public final class OpenApiExporter {
      * it, so an integer ID is exported as {@code 1337}, not {@code "1337"}. A value
      * that does not fit the declared type or enum (e.g. an alphanumeric ID supplied
      * for a parameter the spec calls integer) downgrades that parameter to a plain
-     * string schema, so the exported example never contradicts its schema.
+     * string schema, so the exported example never contradicts its schema. An
+     * empty value the user set explicitly ({@code name=}) is exported as well,
+     * since that is what the request sends; an empty generated value just means
+     * no example could be produced, so the schema is kept and no example emitted.
      */
     private void putSchemaAndExample(ObjectNode p, Param param) {
         ObjectNode schema = param.schema();
         String value = param.exampleValue();
-        if (value.isBlank()) {
+        if (value.isBlank() && !param.hasUserValue()) {
             p.set("schema", schema);
             return;
         }

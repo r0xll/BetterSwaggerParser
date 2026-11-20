@@ -1,6 +1,7 @@
 package io.github.r0xll.betterswagger.core;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -216,5 +217,51 @@ class OpenApiExporterTest {
         ApiSpec spec = parse("petstore-oas30.yaml", "https://api.example.com/openapi.yaml");
         Endpoint ep = byPath(spec, "/pets/{id}");
         assertSame(ep, ep.withParamValues(Map.of("nope", "1")));
+    }
+
+    private static final String QUERY_SPEC = "{\"openapi\":\"3.0.3\",\"info\":{\"title\":\"Q\",\"version\":\"1\"},"
+            + "\"servers\":[{\"url\":\"https://q.example.com\"}],\"paths\":{\"/search\":{\"get\":{\"parameters\":["
+            + "{\"name\":\"q\",\"in\":\"query\",\"schema\":{\"type\":\"string\"}}]}}}}";
+
+    @Test
+    void explicitEmptyValueIsExportedLikeItIsSent() {
+        ApiSpec spec = parser.parse(loader.load(QUERY_SPEC), null).spec();
+        Endpoint ep = spec.endpoints().get(0).withParamValues(Map.of("q", ""));
+
+        JsonNode q = loader.load(exporter.toJson(spec, "https://q.example.com", List.of(ep)))
+                .at("/paths/~1search/get/parameters/0");
+        assertEquals("string", q.at("/schema/type").asText());
+        assertTrue(q.has("example"), "an explicit empty override must be exported");
+        assertEquals("", q.get("example").asText());
+
+        RequestBuilder.BuiltRequest req = new RequestBuilder().build(ep, "https://q.example.com", Map.of());
+        assertTrue(req.raw.startsWith("GET /search?q= HTTP/1.1\r\n"), req.raw);
+    }
+
+    @Test
+    void explicitEmptyValueForTypedParamDowngradesToString() {
+        ApiSpec spec = parse("petstore-swagger2.json", "https://api.example.com/swagger.json");
+        Endpoint ep = byPath(spec, "/pets/{petId}").withParamValues(Map.of("verbose", ""));
+        JsonNode params = loader.load(exporter.toJson(spec, "https://api.example.com/v2", List.of(ep)))
+                .at("/paths/~1pets~1{petId}/get/parameters");
+        JsonNode verbose = findParam(params, "verbose");
+        assertEquals("string", verbose.at("/schema/type").asText());
+        assertEquals("", verbose.get("example").asText());
+    }
+
+    @Test
+    void emptyGeneratedValueKeepsSchemaWithoutExample() {
+        // No example could be generated (e.g. the example budget ran out): keep the
+        // real type rather than exporting a contradictory or misleading "".
+        ObjectNode integer = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+        integer.put("type", "integer");
+        Endpoint ep = new Endpoint("GET", "/items", "", List.of(
+                new Param("limit", Param.Location.QUERY, false, "", integer)), List.of(), null, null);
+        ApiSpec spec = new ApiSpec(ApiSpec.Version.OPENAPI_3_0, "I", List.of(), List.of(ep));
+
+        JsonNode limit = loader.load(exporter.toJson(spec, "https://i.example.com", spec.endpoints()))
+                .at("/paths/~1items/get/parameters/0");
+        assertEquals("integer", limit.at("/schema/type").asText());
+        assertFalse(limit.has("example"));
     }
 }
