@@ -7,6 +7,8 @@ import io.github.r0xll.betterswagger.core.ApiSpec;
 import io.github.r0xll.betterswagger.core.Endpoint;
 import io.github.r0xll.betterswagger.core.OpenApiExporter;
 import io.github.r0xll.betterswagger.core.Param;
+import io.github.r0xll.betterswagger.core.ParamValues;
+import io.github.r0xll.betterswagger.core.ProxyValueHarvester;
 import io.github.r0xll.betterswagger.core.PostmanParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.r0xll.betterswagger.core.ParseResult;
@@ -37,6 +39,8 @@ import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
 import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -107,9 +111,9 @@ final class SwaggerTab {
         previewArea.setEditable(false);
         warningsArea.setEditable(false);
         headersArea.setToolTipText("One header per line, e.g.  Authorization: Bearer <token>");
-        paramValuesArea.setToolTipText("One per line, e.g.  petId=1337 . Replaces the generated value of "
-                + "every path, query, header or cookie parameter with that name, in previews, sends "
-                + "and the OpenAPI export.");
+        paramValuesArea.setToolTipText("One per line: petId=1337 applies to every parameter with that name; "
+                + "/users/{id} id=42 applies only to that path and wins over a plain line. Used in "
+                + "previews, sends and the OpenAPI export.");
         // Keep the preview in step with what would actually be sent.
         paramValuesArea.getDocument().addDocumentListener(new SimpleDocListener(this::updatePreview));
         headersArea.getDocument().addDocumentListener(new SimpleDocListener(this::updatePreview));
@@ -173,11 +177,15 @@ final class SwaggerTab {
         headerPanel.add(new JScrollPane(headersArea), BorderLayout.CENTER);
 
         JPanel paramPanel = new JPanel(new BorderLayout());
-        JPanel paramHeader = new JPanel(new BorderLayout());
-        paramHeader.add(new JLabel("Parameter values (name=value, e.g. real IDs):"), BorderLayout.CENTER);
-        paramHeader.add(button("Add path parameters", this::addPathParameterNames), BorderLayout.EAST);
-        paramPanel.add(paramHeader, BorderLayout.NORTH);
+        paramPanel.add(new JLabel("Parameter values (name=value, or /path/{id} name=value):"),
+                BorderLayout.NORTH);
         paramPanel.add(new JScrollPane(paramValuesArea), BorderLayout.CENTER);
+        JPanel paramButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        paramButtons.add(button("Add path parameters", this::addPathParameterNames));
+        paramButtons.add(button("Fill from Proxy", this::fillFromProxyHistory));
+        paramButtons.add(button("Import...", this::importParamValues));
+        paramButtons.add(button("Export...", this::exportParamValues));
+        paramPanel.add(paramButtons, BorderLayout.SOUTH);
 
         JPanel valuesRow = new JPanel(new GridLayout(1, 2, 8, 0));
         valuesRow.add(headerPanel);
@@ -340,7 +348,7 @@ final class SwaggerTab {
             return;
         }
         try {
-            Endpoint endpoint = selected.get(0).withParamValues(parseParamValues());
+            Endpoint endpoint = paramValues().applyTo(selected.get(0));
             HttpRequest request = dispatcher.toHttpRequest(endpoint, baseUrl, parseHeaders());
             previewArea.setText(request.toString());
             previewArea.setCaretPosition(0);
@@ -376,59 +384,151 @@ final class SwaggerTab {
         return headers;
     }
 
-    /** Parse the parameter-values text area ({@code name=value} per line). GUI input is trusted. */
-    private Map<String, String> parseParamValues() {
-        Map<String, String> values = new LinkedHashMap<>();
-        for (String line : paramValuesArea.getText().split("\n")) {
-            String trimmed = line.trim();
-            int eq = trimmed.indexOf('=');
-            if (eq > 0 && !trimmed.startsWith("#")) {
-                values.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
-            }
-        }
-        return values;
+    /** The parameter-values text area, parsed. GUI input is trusted (BApp rule 1). */
+    private ParamValues paramValues() {
+        return ParamValues.parse(paramValuesArea.getText());
     }
 
     /** Apply the user's parameter values (e.g. real IDs) to each endpoint. */
     private List<Endpoint> withParamValues(List<Endpoint> endpoints) {
-        Map<String, String> values = parseParamValues();
-        List<Endpoint> out = new ArrayList<>(endpoints.size());
-        for (Endpoint ep : endpoints) {
-            out.add(ep.withParamValues(values));
-        }
-        return out;
+        return paramValues().applyTo(endpoints);
     }
 
-    /**
-     * Append a {@code name=value} line for every path parameter in the loaded spec
-     * that the user has not set yet, pre-filled with the current placeholder, so
-     * real IDs only need typing in.
-     */
-    private void addPathParameterNames() {
-        if (currentSpec == null) {
-            showError("Load a spec first.");
-            return;
-        }
-        Map<String, String> existing = parseParamValues();
-        Map<String, String> missing = new LinkedHashMap<>();
-        for (Endpoint ep : currentSpec.endpoints()) {
-            for (Param p : ep.parameters()) {
-                if (p.in() == Param.Location.PATH && !existing.containsKey(p.name())) {
-                    missing.putIfAbsent(p.name(), p.exampleValue());
-                }
-            }
-        }
-        if (missing.isEmpty()) {
-            setStatus("No new path parameters to add.");
+    /** Append lines to the parameter-values area, under an optional comment (EDT only). */
+    private void appendParamLines(List<String> lines, String comment) {
+        if (lines.isEmpty()) {
             return;
         }
         StringBuilder text = new StringBuilder(paramValuesArea.getText());
         if (text.length() > 0 && text.charAt(text.length() - 1) != '\n') {
             text.append('\n');
         }
-        missing.forEach((name, value) -> text.append(name).append('=').append(value).append('\n'));
+        if (comment != null) {
+            text.append("# ").append(comment).append('\n');
+        }
+        lines.forEach(line -> text.append(line).append('\n'));
         paramValuesArea.setText(text.toString());
-        setStatus("Added " + missing.size() + " path parameter(s); replace the placeholders with real values.");
+    }
+
+    /**
+     * Append a line for every path parameter in the loaded spec that has no value
+     * yet, pre-filled with the current placeholder. A name used on several paths
+     * (such as {@code id}) gets one path-scoped line per path.
+     */
+    private void addPathParameterNames() {
+        if (currentSpec == null) {
+            showError("Load a spec first.");
+            return;
+        }
+        List<String> lines = paramValues().missingPathParameterLines(currentSpec.endpoints());
+        if (lines.isEmpty()) {
+            setStatus("No new path parameters to add.");
+            return;
+        }
+        appendParamLines(lines, null);
+        setStatus("Added " + lines.size() + " path parameter line(s); replace the placeholders with real values.");
+    }
+
+    /**
+     * Fill parameter values from Proxy history: requests to the selected base URL's
+     * host and port are matched against the endpoints' path templates, and real IDs
+     * (and declared query values) are appended as path-scoped lines. Values already
+     * set are kept. Runs on the worker; history is read through a filter that only
+     * extracts strings and keeps no message (BApp rules 3 and 7).
+     */
+    private void fillFromProxyHistory() {
+        if (currentSpec == null) {
+            showError("Load a spec first.");
+            return;
+        }
+        URI base;
+        try {
+            base = URI.create(currentBaseUrl());
+        } catch (IllegalArgumentException e) {
+            base = null;
+        }
+        if (base == null || base.getHost() == null) {
+            showError("Select or enter a base URL first.");
+            return;
+        }
+        String host = base.getHost();
+        boolean secure = "https".equalsIgnoreCase(base.getScheme());
+        int port = base.getPort() != -1 ? base.getPort() : (secure ? 443 : 80);
+        String basePath = base.getPath() == null ? "" : base.getPath();
+        List<Endpoint> endpoints = currentSpec.endpoints();
+        ParamValues existing = paramValues();
+        setStatus("Reading Proxy history for " + host + "...");
+        worker.submit("fill from proxy history", () -> {
+            ProxyValueHarvester harvester = new ProxyValueHarvester(endpoints, basePath);
+            int[] scanned = {0};
+            api.proxy().history(item -> {
+                scanned[0]++;
+                var service = item.httpService();
+                if (service.port() == port && host.equalsIgnoreCase(service.host())) {
+                    harvester.observe(item.finalRequest().path());
+                }
+                return false; // keep nothing: only strings leave this callback
+            });
+            List<String> lines = new ArrayList<>();
+            harvester.values().forEach((path, values) -> values.forEach((name, value) -> {
+                if (!existing.covers(path, name)) {
+                    lines.add(ParamValues.line(path, name, value));
+                }
+            }));
+            int matched = harvester.matched();
+            int total = scanned[0];
+            SwingUtilities.invokeLater(() -> {
+                appendParamLines(lines, "From Proxy history (" + host + ")");
+                setStatus(lines.isEmpty()
+                        ? "No new values: " + matched + " of " + total + " Proxy request(s) matched an endpoint."
+                        : "Added " + lines.size() + " value(s) from " + matched + " matching Proxy request(s).");
+            });
+        });
+    }
+
+    private static final long MAX_IMPORT_BYTES = 1024 * 1024;
+
+    private void importParamValues() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Import parameter values");
+        if (chooser.showOpenDialog(api.userInterface().swingUtils().suiteFrame()) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        var path = chooser.getSelectedFile().toPath();
+        worker.submit("import parameter values", () -> {
+            try {
+                if (Files.size(path) > MAX_IMPORT_BYTES) {
+                    showError("Parameter values file is larger than 1 MiB.");
+                    return;
+                }
+                List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+                SwingUtilities.invokeLater(() -> {
+                    appendParamLines(lines, "Imported from " + path.getFileName());
+                    setStatus("Imported " + lines.size() + " line(s); imported values override earlier ones.");
+                });
+            } catch (IOException ex) {
+                showError("Could not read parameter values: " + ex.getMessage());
+            }
+        });
+    }
+
+    private void exportParamValues() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export parameter values");
+        chooser.setSelectedFile(new java.io.File("parameter-values.txt"));
+        if (chooser.showSaveDialog(api.userInterface().swingUtils().suiteFrame()) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        var path = chooser.getSelectedFile().toPath();
+        String text = paramValuesArea.getText();
+        worker.submit("export parameter values", () -> {
+            try {
+                Files.writeString(path, text, StandardCharsets.UTF_8);
+                setStatus("Exported parameter values to " + path.getFileName() + ".");
+            } catch (IOException ex) {
+                showError("Could not write parameter values: " + ex.getMessage());
+            }
+        });
     }
 
     private void applyFilter() {
