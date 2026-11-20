@@ -19,18 +19,22 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public final class ExampleGenerator {
 
     private static final int MAX_DEPTH = 15;
+    /** Node budget for a single example (one body or one parameter), not the whole spec. */
     private static final int MAX_NODES = 5_000;
     private static final int MAX_ARRAY_ITEMS = 2;
 
     private final RefResolver refs;
     private final JsonNodeFactory nf = JsonNodeFactory.instance;
-    private int nodeBudget = MAX_NODES;
+    private int nodeBudget;
 
     public ExampleGenerator(RefResolver refs) {
         this.refs = refs;
     }
 
     public JsonNode generate(JsonNode schema) {
+        // Each example gets its own budget; a shared one would starve every
+        // operation after the first few thousand nodes of a large spec.
+        nodeBudget = MAX_NODES;
         return build(schema, 0);
     }
 

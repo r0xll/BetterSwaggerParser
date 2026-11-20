@@ -92,4 +92,31 @@ class SpecParserTest {
         JsonNode root = loader.load("{\"hello\":\"world\"}");
         assertThrows(SpecException.class, () -> parser.parse(root, null));
     }
+
+    @Test
+    void largeSpecKeepsGeneratingExamplesForLaterOperations() {
+        // Regression: the example node budget used to be shared across the whole
+        // spec, so operations past the first ~5,000 schema nodes got "null" bodies
+        // and empty parameter placeholders.
+        StringBuilder props = new StringBuilder();
+        for (int j = 0; j < 30; j++) {
+            props.append(j == 0 ? "" : ",").append("\"p").append(j).append("\":{\"type\":\"string\"}");
+        }
+        StringBuilder paths = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            paths.append(i == 0 ? "" : ",").append("\"/r").append(i).append("\":{\"post\":{")
+                    .append("\"parameters\":[{\"name\":\"q\",\"in\":\"query\",\"schema\":{\"type\":\"integer\"}}],")
+                    .append("\"requestBody\":{\"content\":{\"application/json\":{\"schema\":")
+                    .append("{\"type\":\"object\",\"properties\":{").append(props).append("}}}}}}}");
+        }
+        String json = "{\"openapi\":\"3.0.3\",\"info\":{\"title\":\"Big\",\"version\":\"1\"},"
+                + "\"paths\":{" + paths + "}}";
+
+        ApiSpec spec = parser.parse(loader.load(json), "https://big.example.com/openapi.json").spec();
+        assertEquals(300, spec.endpoints().size());
+        for (Endpoint e : spec.endpoints()) {
+            assertTrue(e.requestBody().contains("\"p29\""), e.path() + " body: " + e.requestBody());
+            assertEquals("0", e.parameters().get(0).exampleValue(), e.path() + " param");
+        }
+    }
 }
