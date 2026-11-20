@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import io.github.r0xll.betterswagger.core.ApiSpec;
 import io.github.r0xll.betterswagger.core.Endpoint;
 import io.github.r0xll.betterswagger.core.OpenApiExporter;
+import io.github.r0xll.betterswagger.core.Param;
 import io.github.r0xll.betterswagger.core.ParseResult;
 import io.github.r0xll.betterswagger.core.SpecException;
 import io.github.r0xll.betterswagger.core.SpecLoader;
@@ -65,6 +66,7 @@ final class SwaggerTab {
     private final JTextField filterField = new JTextField(20);
     private final JComboBox<String> baseUrlBox = new JComboBox<>();
     private final JTextArea headersArea = new JTextArea(4, 40);
+    private final JTextArea paramValuesArea = new JTextArea(4, 30);
     private final JTextArea pasteArea = new JTextArea(8, 40);
     private final JTextField urlField = new JTextField(30);
     private final JTextArea previewArea = new JTextArea();
@@ -98,6 +100,12 @@ final class SwaggerTab {
         previewArea.setEditable(false);
         warningsArea.setEditable(false);
         headersArea.setToolTipText("One header per line, e.g.  Authorization: Bearer <token>");
+        paramValuesArea.setToolTipText("One per line, e.g.  petId=1337 . Replaces the generated value of "
+                + "every path, query, header or cookie parameter with that name, in previews, sends "
+                + "and the OpenAPI export.");
+        // Keep the preview in step with what would actually be sent.
+        paramValuesArea.getDocument().addDocumentListener(new SimpleDocListener(this::updatePreview));
+        headersArea.getDocument().addDocumentListener(new SimpleDocListener(this::updatePreview));
 
         JSplitPane centre = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 new JScrollPane(table),
@@ -145,10 +153,21 @@ final class SwaggerTab {
         baseUrlRow.add(filterField);
         filterField.getDocument().addDocumentListener(new SimpleDocListener(this::applyFilter));
         config.add(baseUrlRow);
-        JPanel headerRow = new JPanel(new BorderLayout());
-        headerRow.add(new JLabel("Custom headers (applied to every request):"), BorderLayout.NORTH);
-        headerRow.add(new JScrollPane(headersArea), BorderLayout.CENTER);
-        config.add(headerRow);
+        JPanel headerPanel = new JPanel(new BorderLayout());
+        headerPanel.add(new JLabel("Custom headers (applied to every request):"), BorderLayout.NORTH);
+        headerPanel.add(new JScrollPane(headersArea), BorderLayout.CENTER);
+
+        JPanel paramPanel = new JPanel(new BorderLayout());
+        JPanel paramHeader = new JPanel(new BorderLayout());
+        paramHeader.add(new JLabel("Parameter values (name=value, e.g. real IDs):"), BorderLayout.CENTER);
+        paramHeader.add(button("Add path parameters", this::addPathParameterNames), BorderLayout.EAST);
+        paramPanel.add(paramHeader, BorderLayout.NORTH);
+        paramPanel.add(new JScrollPane(paramValuesArea), BorderLayout.CENTER);
+
+        JPanel valuesRow = new JPanel(new GridLayout(1, 2, 8, 0));
+        valuesRow.add(headerPanel);
+        valuesRow.add(paramPanel);
+        config.add(valuesRow);
 
         JPanel north = new JPanel(new BorderLayout());
         north.add(sources, BorderLayout.CENTER);
@@ -272,7 +291,8 @@ final class SwaggerTab {
             return;
         }
         try {
-            HttpRequest request = dispatcher.toHttpRequest(selected.get(0), baseUrl, parseHeaders());
+            Endpoint endpoint = selected.get(0).withParamValues(parseParamValues());
+            HttpRequest request = dispatcher.toHttpRequest(endpoint, baseUrl, parseHeaders());
             previewArea.setText(request.toString());
             previewArea.setCaretPosition(0);
         } catch (RuntimeException ex) {
@@ -305,6 +325,61 @@ final class SwaggerTab {
             }
         }
         return headers;
+    }
+
+    /** Parse the parameter-values text area ({@code name=value} per line). GUI input is trusted. */
+    private Map<String, String> parseParamValues() {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String line : paramValuesArea.getText().split("\n")) {
+            String trimmed = line.trim();
+            int eq = trimmed.indexOf('=');
+            if (eq > 0 && !trimmed.startsWith("#")) {
+                values.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
+            }
+        }
+        return values;
+    }
+
+    /** Apply the user's parameter values (e.g. real IDs) to each endpoint. */
+    private List<Endpoint> withParamValues(List<Endpoint> endpoints) {
+        Map<String, String> values = parseParamValues();
+        List<Endpoint> out = new ArrayList<>(endpoints.size());
+        for (Endpoint ep : endpoints) {
+            out.add(ep.withParamValues(values));
+        }
+        return out;
+    }
+
+    /**
+     * Append a {@code name=value} line for every path parameter in the loaded spec
+     * that the user has not set yet, pre-filled with the current placeholder, so
+     * real IDs only need typing in.
+     */
+    private void addPathParameterNames() {
+        if (currentSpec == null) {
+            showError("Load a spec first.");
+            return;
+        }
+        Map<String, String> existing = parseParamValues();
+        Map<String, String> missing = new LinkedHashMap<>();
+        for (Endpoint ep : currentSpec.endpoints()) {
+            for (Param p : ep.parameters()) {
+                if (p.in() == Param.Location.PATH && !existing.containsKey(p.name())) {
+                    missing.putIfAbsent(p.name(), p.exampleValue());
+                }
+            }
+        }
+        if (missing.isEmpty()) {
+            setStatus("No new path parameters to add.");
+            return;
+        }
+        StringBuilder text = new StringBuilder(paramValuesArea.getText());
+        if (text.length() > 0 && text.charAt(text.length() - 1) != '\n') {
+            text.append('\n');
+        }
+        missing.forEach((name, value) -> text.append(name).append('=').append(value).append('\n'));
+        paramValuesArea.setText(text.toString());
+        setStatus("Added " + missing.size() + " path parameter(s); replace the placeholders with real values.");
     }
 
     private void applyFilter() {
@@ -366,7 +441,7 @@ final class SwaggerTab {
         }
         Map<String, String> headers = parseHeaders();
         int sent = 0;
-        for (Endpoint ep : selected) {
+        for (Endpoint ep : withParamValues(selected)) {
             try {
                 sink.accept(dispatcher.toHttpRequest(ep, baseUrl, headers), ep);
                 sent++;
@@ -386,7 +461,7 @@ final class SwaggerTab {
         }
         Map<String, String> headers = parseHeaders();
         List<HttpRequest> requests = new ArrayList<>();
-        for (Endpoint ep : selected) {
+        for (Endpoint ep : withParamValues(selected)) {
             try {
                 requests.add(dispatcher.toHttpRequest(ep, baseUrl, headers));
             } catch (RuntimeException ex) {
@@ -425,7 +500,7 @@ final class SwaggerTab {
 
         // Snapshot the model before leaving the EDT so the worker touches no Swing state.
         ApiSpec spec = currentSpec;
-        List<Endpoint> endpoints = new ArrayList<>(toExport);
+        List<Endpoint> endpoints = withParamValues(toExport);
         int count = endpoints.size();
         worker.submit("export OpenAPI", () -> {
             try {

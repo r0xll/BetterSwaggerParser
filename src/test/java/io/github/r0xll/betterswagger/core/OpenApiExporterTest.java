@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -124,5 +125,96 @@ class OpenApiExporterTest {
         JsonNode root = loader.load(exporter.toJson(spec, "https://h.example.com", spec.endpoints()));
         JsonNode schema = root.at("/paths/~1login/post/requestBody/content/application~1x-www-form-urlencoded/schema");
         assertEquals("string", schema.path("type").asText());
+    }
+
+    private static final String ENUM_SPEC = "{\"openapi\":\"3.0.3\",\"info\":{\"title\":\"E\",\"version\":\"1\"},"
+            + "\"servers\":[{\"url\":\"https://e.example.com\"}],\"paths\":{\"/pets\":{\"get\":{\"parameters\":["
+            + "{\"name\":\"status\",\"in\":\"query\",\"schema\":{\"type\":\"string\","
+            + "\"enum\":[\"available\",\"sold\"]}}]}}}}";
+
+    private static JsonNode findParam(JsonNode params, String name) {
+        for (JsonNode p : params) {
+            if (name.equals(p.path("name").asText())) {
+                return p;
+            }
+        }
+        throw new AssertionError("no parameter " + name);
+    }
+
+    private Endpoint byPath(ApiSpec spec, String path) {
+        return spec.endpoints().stream().filter(e -> e.path().equals(path)).findFirst().orElseThrow();
+    }
+
+    private JsonNode exportedIdParam(ApiSpec spec, Endpoint ep) {
+        JsonNode root = loader.load(exporter.toJson(spec, "https://api.example.com/v3", List.of(ep)));
+        return root.at("/paths/~1pets~1{id}/get/parameters/0");
+    }
+
+    @Test
+    void pathParamKeepsIntegerTypeWithNumericExample() {
+        ApiSpec spec = parse("petstore-oas30.yaml", "https://api.example.com/openapi.yaml");
+        JsonNode id = exportedIdParam(spec, byPath(spec, "/pets/{id}"));
+        assertEquals("integer", id.at("/schema/type").asText());
+        assertTrue(id.get("example").isNumber(), "integer param example must be numeric");
+    }
+
+    @Test
+    void swagger2InlineParamTypesArePreserved() {
+        ApiSpec spec = parse("petstore-swagger2.json", "https://api.example.com/swagger.json");
+        JsonNode root = loader.load(exporter.toJson(spec, "https://api.example.com/v2", spec.endpoints()));
+        JsonNode params = root.at("/paths/~1pets~1{petId}/get/parameters");
+        assertEquals("integer", findParam(params, "petId").at("/schema/type").asText());
+        JsonNode verbose = findParam(params, "verbose");
+        assertEquals("boolean", verbose.at("/schema/type").asText());
+        assertTrue(verbose.get("example").isBoolean());
+    }
+
+    @Test
+    void userSuppliedIdIsUsedInExportAndRequest() {
+        ApiSpec spec = parse("petstore-oas30.yaml", "https://api.example.com/openapi.yaml");
+        Endpoint getById = byPath(spec, "/pets/{id}").withParamValues(Map.of("id", "1337"));
+
+        JsonNode id = exportedIdParam(spec, getById);
+        assertEquals("integer", id.at("/schema/type").asText());
+        assertTrue(id.get("example").isNumber());
+        assertEquals(1337, id.get("example").asInt());
+
+        RequestBuilder.BuiltRequest req =
+                new RequestBuilder().build(getById, "https://api.example.com/v3", Map.of());
+        assertTrue(req.raw.startsWith("GET /v3/pets/1337 HTTP/1.1\r\n"), req.raw);
+    }
+
+    @Test
+    void valueThatDoesNotFitTheTypeDowngradesToString() {
+        ApiSpec spec = parse("petstore-oas30.yaml", "https://api.example.com/openapi.yaml");
+        JsonNode id = exportedIdParam(spec,
+                byPath(spec, "/pets/{id}").withParamValues(Map.of("id", "abc-123")));
+        assertEquals("string", id.at("/schema/type").asText());
+        assertTrue(id.get("example").isTextual());
+        assertEquals("abc-123", id.get("example").asText());
+    }
+
+    @Test
+    void enumIsKeptForAllowedValuesAndDroppedOtherwise() {
+        ApiSpec spec = parser.parse(loader.load(ENUM_SPEC), null).spec();
+        Endpoint ep = spec.endpoints().get(0);
+
+        JsonNode allowed = loader.load(exporter.toJson(spec, "https://e.example.com",
+                List.of(ep.withParamValues(Map.of("status", "sold"))))).at("/paths/~1pets/get/parameters/0");
+        assertEquals(2, allowed.at("/schema/enum").size());
+        assertEquals("sold", allowed.get("example").asText());
+
+        JsonNode outside = loader.load(exporter.toJson(spec, "https://e.example.com",
+                List.of(ep.withParamValues(Map.of("status", "pending"))))).at("/paths/~1pets/get/parameters/0");
+        assertTrue(outside.at("/schema/enum").isMissingNode());
+        assertEquals("string", outside.at("/schema/type").asText());
+        assertEquals("pending", outside.get("example").asText());
+    }
+
+    @Test
+    void overridesWithUnknownNamesLeaveTheEndpointUnchanged() {
+        ApiSpec spec = parse("petstore-oas30.yaml", "https://api.example.com/openapi.yaml");
+        Endpoint ep = byPath(spec, "/pets/{id}");
+        assertSame(ep, ep.withParamValues(Map.of("nope", "1")));
     }
 }

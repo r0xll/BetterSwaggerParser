@@ -48,7 +48,10 @@ final class ParamCollector {
             }
             boolean required = p.path("required").asBoolean(false);
             String example = exampleFor(p);
-            byKey.put(loc + ":" + name, new Param(name, loc, required, example));
+            // OpenAPI 3 nests the schema; Swagger 2.0 inlines type/format/enum on the parameter.
+            JsonNode schemaSource = p.has("schema") ? p.get("schema") : p;
+            byKey.put(loc + ":" + name, new Param(name, loc, required, example,
+                    SchemaSanitizer.sanitize(schemaSource, refs)));
         }
     }
 

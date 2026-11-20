@@ -7,9 +7,12 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Serializes a parsed {@link ApiSpec} (optionally a chosen subset of its
@@ -23,11 +26,12 @@ import java.util.Map;
  * the declared security schemes, with {@code servers} pinned to the base URL the
  * user chose in the UI.
  *
- * <p>This is a lossy export by design &mdash; full request/response JSON Schemas
- * are not reconstructed (the model keeps example values, not schemas), so
- * parameter and body schemas are emitted as permissive {@code string} types
- * carrying the generated example. That is enough for Burp to enumerate and
- * exercise each operation.
+ * <p>This is a lossy export by design. Parameters keep a sanitized copy of their
+ * original schema ({@code type}, {@code format}, {@code enum}, array
+ * {@code items}; see {@link SchemaSanitizer}) with an example typed to match.
+ * Request-body schemas are not reconstructed from the source document; they are
+ * inferred from the generated example instead. That is enough for Burp to
+ * enumerate and exercise each operation.
  */
 public final class OpenApiExporter {
 
@@ -104,10 +108,7 @@ public final class OpenApiExporter {
             p.put("in", in);
             // OpenAPI requires path parameters to be required.
             p.put("required", param.required() || param.in() == Param.Location.PATH);
-            p.putObject("schema").put("type", "string");
-            if (!param.exampleValue().isBlank()) {
-                p.put("example", param.exampleValue());
-            }
+            putSchemaAndExample(p, param);
             parameters.add(p);
         }
         if (!parameters.isEmpty()) {
@@ -141,6 +142,78 @@ public final class OpenApiExporter {
         // An operation object must always have a responses field to be valid.
         operation.putObject("responses").putObject("default").put("description", "Response");
         return operation;
+    }
+
+    private static final Pattern INTEGER = Pattern.compile("-?\\d{1,38}");
+
+    /**
+     * Emit the parameter's real (sanitized) schema and an example typed to match
+     * it, so an integer ID is exported as {@code 1337}, not {@code "1337"}. A value
+     * that does not fit the declared type or enum (e.g. an alphanumeric ID supplied
+     * for a parameter the spec calls integer) downgrades that parameter to a plain
+     * string schema, so the exported example never contradicts its schema.
+     */
+    private void putSchemaAndExample(ObjectNode p, Param param) {
+        ObjectNode schema = param.schema();
+        String value = param.exampleValue();
+        if (value.isBlank()) {
+            p.set("schema", schema);
+            return;
+        }
+        JsonNode typed = typedValue(value, schema.path("type").asText("string"));
+        if (typed == null || !inEnum(typed, schema.get("enum"))) {
+            schema = SchemaSanitizer.stringSchema();
+            typed = nf.textNode(value);
+        }
+        p.set("schema", schema);
+        p.set("example", typed);
+    }
+
+    /** {@code value} as a JSON value of {@code type}, or null if it does not fit. */
+    private JsonNode typedValue(String value, String type) {
+        switch (type) {
+            case "integer":
+                return INTEGER.matcher(value).matches() ? nf.numberNode(new BigInteger(value)) : null;
+            case "number":
+                if (value.length() > 64) {
+                    return null;
+                }
+                try {
+                    return nf.numberNode(new BigDecimal(value));
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            case "boolean":
+                return "true".equals(value) || "false".equals(value)
+                        ? nf.booleanNode(Boolean.parseBoolean(value)) : null;
+            case "array":
+            case "object":
+                try {
+                    JsonNode parsed = mapper.readTree(value);
+                    boolean fits = parsed != null
+                            && ("array".equals(type) ? parsed.isArray() : parsed.isObject());
+                    return fits ? parsed : null;
+                } catch (JsonProcessingException e) {
+                    return null;
+                }
+            default:
+                return nf.textNode(value);
+        }
+    }
+
+    private static boolean inEnum(JsonNode value, JsonNode enumValues) {
+        if (enumValues == null || !enumValues.isArray()) {
+            return true;
+        }
+        if (!value.isValueNode()) {
+            return false;
+        }
+        for (JsonNode allowed : enumValues) {
+            if (allowed.asText().equals(value.asText())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Embed a JSON body as structured JSON, otherwise as a raw string. */
