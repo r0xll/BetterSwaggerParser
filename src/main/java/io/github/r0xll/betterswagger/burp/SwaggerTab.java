@@ -4,9 +4,16 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import io.github.r0xll.betterswagger.core.ApiSpec;
+import io.github.r0xll.betterswagger.core.AuthProfile;
+import io.github.r0xll.betterswagger.core.AuthValues;
+import io.github.r0xll.betterswagger.core.OAuth2Client;
 import io.github.r0xll.betterswagger.core.Endpoint;
 import io.github.r0xll.betterswagger.core.OpenApiExporter;
 import io.github.r0xll.betterswagger.core.Param;
+import io.github.r0xll.betterswagger.core.ParamValues;
+import io.github.r0xll.betterswagger.core.ProxyValueHarvester;
+import io.github.r0xll.betterswagger.core.PostmanParser;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.r0xll.betterswagger.core.ParseResult;
 import io.github.r0xll.betterswagger.core.SpecException;
 import io.github.r0xll.betterswagger.core.SpecLoader;
@@ -35,6 +42,8 @@ import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
 import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -76,6 +85,15 @@ final class SwaggerTab {
     private final OpenApiExporter exporter = new OpenApiExporter();
     private ApiSpec currentSpec;
 
+    // Postman state, written on the worker and read on both threads.
+    private final JLabel environmentLabel = new JLabel("No Postman environment");
+    private volatile Map<String, String> postmanEnvironment = Map.of();
+    private volatile JsonNode lastCollection;
+
+    // Auth profiles: edited and read on the EDT only. Index 0 of the box is "None".
+    private final List<AuthProfile> authProfiles = new ArrayList<>();
+    private final JComboBox<String> authBox = new JComboBox<>(new String[]{"None"});
+
     SwaggerTab(MontoyaApi api, BackgroundWorker worker, RequestDispatcher dispatcher) {
         this.api = api;
         this.worker = worker;
@@ -100,9 +118,9 @@ final class SwaggerTab {
         previewArea.setEditable(false);
         warningsArea.setEditable(false);
         headersArea.setToolTipText("One header per line, e.g.  Authorization: Bearer <token>");
-        paramValuesArea.setToolTipText("One per line, e.g.  petId=1337 . Replaces the generated value of "
-                + "every path, query, header or cookie parameter with that name, in previews, sends "
-                + "and the OpenAPI export.");
+        paramValuesArea.setToolTipText("One per line: petId=1337 applies to every parameter with that name; "
+                + "/users/{id} id=42 applies only to that path and wins over a plain line. Used in "
+                + "previews, sends and the OpenAPI export.");
         // Keep the preview in step with what would actually be sent.
         paramValuesArea.getDocument().addDocumentListener(new SimpleDocListener(this::updatePreview));
         headersArea.getDocument().addDocumentListener(new SimpleDocListener(this::updatePreview));
@@ -122,9 +140,17 @@ final class SwaggerTab {
 
         // File.
         JPanel filePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JButton chooseFile = new JButton("Choose spec file...");
+        JButton chooseFile = new JButton("Choose spec / collection...");
+        chooseFile.setToolTipText("Swagger 2.0, OpenAPI 3.x (JSON/YAML) or a Postman collection (v2.x)");
         chooseFile.addActionListener(e -> chooseFile());
         filePanel.add(chooseFile);
+        JButton chooseEnvironment = new JButton("Postman environment...");
+        chooseEnvironment.setToolTipText("Variables for {{name}} references in a Postman collection. "
+                + "They override the collection's own variables.");
+        chooseEnvironment.addActionListener(e -> chooseFile());
+        filePanel.add(chooseEnvironment);
+        filePanel.add(button("Clear environment", this::clearEnvironment));
+        filePanel.add(environmentLabel);
         sources.addTab("File", filePanel);
 
         // Paste.
@@ -149,6 +175,12 @@ final class SwaggerTab {
         baseUrlRow.add(new JLabel("Base URL:"));
         baseUrlBox.setEditable(true);
         baseUrlRow.add(baseUrlBox);
+        baseUrlRow.add(new JLabel("Auth:"));
+        authBox.setToolTipText("Auth profile applied to every request; it replaces the document's own auth.");
+        authBox.addActionListener(e -> updatePreview());
+        baseUrlRow.add(authBox);
+        baseUrlRow.add(button("Profiles...", this::openAuthProfiles));
+        baseUrlRow.add(button("Get token", this::refreshActiveToken));
         baseUrlRow.add(new JLabel("Filter:"));
         baseUrlRow.add(filterField);
         filterField.getDocument().addDocumentListener(new SimpleDocListener(this::applyFilter));
@@ -158,11 +190,15 @@ final class SwaggerTab {
         headerPanel.add(new JScrollPane(headersArea), BorderLayout.CENTER);
 
         JPanel paramPanel = new JPanel(new BorderLayout());
-        JPanel paramHeader = new JPanel(new BorderLayout());
-        paramHeader.add(new JLabel("Parameter values (name=value, e.g. real IDs):"), BorderLayout.CENTER);
-        paramHeader.add(button("Add path parameters", this::addPathParameterNames), BorderLayout.EAST);
-        paramPanel.add(paramHeader, BorderLayout.NORTH);
+        paramPanel.add(new JLabel("Parameter values (name=value, or /path/{id} name=value):"),
+                BorderLayout.NORTH);
         paramPanel.add(new JScrollPane(paramValuesArea), BorderLayout.CENTER);
+        JPanel paramButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        paramButtons.add(button("Add path parameters", this::addPathParameterNames));
+        paramButtons.add(button("Fill from Proxy", this::fillFromProxyHistory));
+        paramButtons.add(button("Import...", this::importParamValues));
+        paramButtons.add(button("Export...", this::exportParamValues));
+        paramPanel.add(paramButtons, BorderLayout.SOUTH);
 
         JPanel valuesRow = new JPanel(new GridLayout(1, 2, 8, 0));
         valuesRow.add(headerPanel);
@@ -249,15 +285,49 @@ final class SwaggerTab {
         worker.submit("parse text", () -> parseBytes(text.getBytes(java.nio.charset.StandardCharsets.UTF_8), sourceUrl));
     }
 
+    /**
+     * Parse an OpenAPI/Swagger spec, a Postman collection, or a Postman environment
+     * (detected from the content). Runs on the background worker.
+     */
     private void parseBytes(byte[] data, String sourceUrl) {
         try {
-            SpecLoader loader = new SpecLoader();
-            SpecParser parser = new SpecParser();
-            ParseResult result = parser.parse(loader.load(data), sourceUrl);
+            JsonNode root = new SpecLoader().load(data);
+            if (PostmanParser.isEnvironment(root)) {
+                applyEnvironment(PostmanParser.readEnvironment(root), PostmanParser.environmentName(root));
+                return;
+            }
+            ParseResult result;
+            if (PostmanParser.isCollection(root)) {
+                lastCollection = root;
+                result = new PostmanParser().parse(root, postmanEnvironment);
+            } else {
+                lastCollection = null;
+                result = new SpecParser().parse(root, sourceUrl);
+            }
             SwingUtilities.invokeLater(() -> applyParseResult(result));
         } catch (SpecException ex) {
             showError("Failed to parse spec: " + ex.getMessage());
         }
+    }
+
+    /** Use an environment's variables and re-parse the loaded collection with them (worker thread). */
+    private void applyEnvironment(Map<String, String> variables, String name) {
+        postmanEnvironment = Map.copyOf(variables);
+        String label = variables.isEmpty() ? "No Postman environment"
+                : "Environment: " + name + " (" + variables.size() + " variables)";
+        SwingUtilities.invokeLater(() -> environmentLabel.setText(label));
+        JsonNode collection = lastCollection;
+        if (collection != null) {
+            ParseResult result = new PostmanParser().parse(collection, postmanEnvironment);
+            SwingUtilities.invokeLater(() -> applyParseResult(result));
+        } else {
+            setStatus(variables.isEmpty() ? "Postman environment cleared."
+                    : "Loaded Postman environment " + name + "; it applies to the next collection you load.");
+        }
+    }
+
+    private void clearEnvironment() {
+        worker.submit("clear environment", () -> applyEnvironment(Map.of(), ""));
     }
 
     private void applyParseResult(ParseResult result) {
@@ -291,8 +361,8 @@ final class SwaggerTab {
             return;
         }
         try {
-            Endpoint endpoint = selected.get(0).withParamValues(parseParamValues());
-            HttpRequest request = dispatcher.toHttpRequest(endpoint, baseUrl, parseHeaders());
+            Endpoint endpoint = paramValues().applyTo(selected.get(0));
+            HttpRequest request = dispatcher.toHttpRequest(endpoint, baseUrl, parseHeaders(), activeAuth());
             previewArea.setText(request.toString());
             previewArea.setCaretPosition(0);
         } catch (RuntimeException ex) {
@@ -327,59 +397,251 @@ final class SwaggerTab {
         return headers;
     }
 
-    /** Parse the parameter-values text area ({@code name=value} per line). GUI input is trusted. */
-    private Map<String, String> parseParamValues() {
-        Map<String, String> values = new LinkedHashMap<>();
-        for (String line : paramValuesArea.getText().split("\n")) {
-            String trimmed = line.trim();
-            int eq = trimmed.indexOf('=');
-            if (eq > 0 && !trimmed.startsWith("#")) {
-                values.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
-            }
-        }
-        return values;
+    /** The parameter-values text area, parsed. GUI input is trusted (BApp rule 1). */
+    private ParamValues paramValues() {
+        return ParamValues.parse(paramValuesArea.getText());
     }
 
     /** Apply the user's parameter values (e.g. real IDs) to each endpoint. */
     private List<Endpoint> withParamValues(List<Endpoint> endpoints) {
-        Map<String, String> values = parseParamValues();
-        List<Endpoint> out = new ArrayList<>(endpoints.size());
-        for (Endpoint ep : endpoints) {
-            out.add(ep.withParamValues(values));
-        }
-        return out;
+        return paramValues().applyTo(endpoints);
     }
 
-    /**
-     * Append a {@code name=value} line for every path parameter in the loaded spec
-     * that the user has not set yet, pre-filled with the current placeholder, so
-     * real IDs only need typing in.
-     */
-    private void addPathParameterNames() {
-        if (currentSpec == null) {
-            showError("Load a spec first.");
-            return;
-        }
-        Map<String, String> existing = parseParamValues();
-        Map<String, String> missing = new LinkedHashMap<>();
-        for (Endpoint ep : currentSpec.endpoints()) {
-            for (Param p : ep.parameters()) {
-                if (p.in() == Param.Location.PATH && !existing.containsKey(p.name())) {
-                    missing.putIfAbsent(p.name(), p.exampleValue());
-                }
-            }
-        }
-        if (missing.isEmpty()) {
-            setStatus("No new path parameters to add.");
+    /** Append lines to the parameter-values area, under an optional comment (EDT only). */
+    private void appendParamLines(List<String> lines, String comment) {
+        if (lines.isEmpty()) {
             return;
         }
         StringBuilder text = new StringBuilder(paramValuesArea.getText());
         if (text.length() > 0 && text.charAt(text.length() - 1) != '\n') {
             text.append('\n');
         }
-        missing.forEach((name, value) -> text.append(name).append('=').append(value).append('\n'));
+        if (comment != null) {
+            text.append("# ").append(comment).append('\n');
+        }
+        lines.forEach(line -> text.append(line).append('\n'));
         paramValuesArea.setText(text.toString());
-        setStatus("Added " + missing.size() + " path parameter(s); replace the placeholders with real values.");
+    }
+
+    /**
+     * Append a line for every path parameter in the loaded spec that has no value
+     * yet, pre-filled with the current placeholder. A name used on several paths
+     * (such as {@code id}) gets one path-scoped line per path.
+     */
+    private void addPathParameterNames() {
+        if (currentSpec == null) {
+            showError("Load a spec first.");
+            return;
+        }
+        List<String> lines = paramValues().missingPathParameterLines(currentSpec.endpoints());
+        if (lines.isEmpty()) {
+            setStatus("No new path parameters to add.");
+            return;
+        }
+        appendParamLines(lines, null);
+        setStatus("Added " + lines.size() + " path parameter line(s); replace the placeholders with real values.");
+    }
+
+    /**
+     * Fill parameter values from Proxy history: requests to the selected base URL's
+     * host and port are matched against the endpoints' path templates, and real IDs
+     * (and declared query values) are appended as path-scoped lines. Values already
+     * set are kept. Runs on the worker; history is read through a filter that only
+     * extracts strings and keeps no message (BApp rules 3 and 7).
+     */
+    private void fillFromProxyHistory() {
+        if (currentSpec == null) {
+            showError("Load a spec first.");
+            return;
+        }
+        URI base;
+        try {
+            base = URI.create(currentBaseUrl());
+        } catch (IllegalArgumentException e) {
+            base = null;
+        }
+        if (base == null || base.getHost() == null) {
+            showError("Select or enter a base URL first.");
+            return;
+        }
+        String host = base.getHost();
+        boolean secure = "https".equalsIgnoreCase(base.getScheme());
+        int port = base.getPort() != -1 ? base.getPort() : (secure ? 443 : 80);
+        String basePath = base.getPath() == null ? "" : base.getPath();
+        List<Endpoint> endpoints = currentSpec.endpoints();
+        ParamValues existing = paramValues();
+        setStatus("Reading Proxy history for " + host + "...");
+        worker.submit("fill from proxy history", () -> {
+            ProxyValueHarvester harvester = new ProxyValueHarvester(endpoints, basePath);
+            java.util.concurrent.atomic.AtomicInteger scanned = new java.util.concurrent.atomic.AtomicInteger();
+            api.proxy().history(item -> {
+                scanned.incrementAndGet();
+                try {
+                    var service = item.httpService();
+                    if (service.port() == port && host.equalsIgnoreCase(service.host())) {
+                        harvester.observe(item.finalRequest().path());
+                    }
+                } catch (RuntimeException ignored) {
+                    // A malformed history item must not stop the whole scan.
+                }
+                return false; // keep nothing: only strings leave this callback
+            });
+            List<String> lines = new ArrayList<>();
+            harvester.values().forEach((path, values) -> values.forEach((name, value) -> {
+                if (!existing.covers(path, name)) {
+                    lines.add(ParamValues.line(path, name, value));
+                }
+            }));
+            int matched = harvester.matched();
+            int total = scanned.get();
+            SwingUtilities.invokeLater(() -> {
+                appendParamLines(lines, "From Proxy history (" + host + ")");
+                setStatus(lines.isEmpty()
+                        ? "No new values: " + matched + " of " + total + " Proxy request(s) matched an endpoint."
+                        : "Added " + lines.size() + " value(s) from " + matched + " matching Proxy request(s).");
+            });
+        });
+    }
+
+    private static final long MAX_IMPORT_BYTES = 1024 * 1024;
+
+    private void importParamValues() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Import parameter values");
+        if (chooser.showOpenDialog(api.userInterface().swingUtils().suiteFrame()) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        var path = chooser.getSelectedFile().toPath();
+        worker.submit("import parameter values", () -> {
+            try {
+                if (Files.size(path) > MAX_IMPORT_BYTES) {
+                    showError("Parameter values file is larger than 1 MiB.");
+                    return;
+                }
+                List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+                SwingUtilities.invokeLater(() -> {
+                    appendParamLines(lines, "Imported from " + path.getFileName());
+                    setStatus("Imported " + lines.size() + " line(s); imported values override earlier ones.");
+                });
+            } catch (IOException ex) {
+                showError("Could not read parameter values: " + ex.getMessage());
+            }
+        });
+    }
+
+    private void exportParamValues() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export parameter values");
+        chooser.setSelectedFile(new java.io.File("parameter-values.txt"));
+        if (chooser.showSaveDialog(api.userInterface().swingUtils().suiteFrame()) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        var path = chooser.getSelectedFile().toPath();
+        String text = paramValuesArea.getText();
+        worker.submit("export parameter values", () -> {
+            try {
+                Files.writeString(path, text, StandardCharsets.UTF_8);
+                setStatus("Exported parameter values to " + path.getFileName() + ".");
+            } catch (IOException ex) {
+                showError("Could not write parameter values: " + ex.getMessage());
+            }
+        });
+    }
+
+    // ---- Auth profiles ---------------------------------------------------
+
+    private AuthProfile activeProfile() {
+        int index = authBox.getSelectedIndex();
+        return index <= 0 || index > authProfiles.size() ? null : authProfiles.get(index - 1);
+    }
+
+    /** Values of the active profile; warns when an OAuth 2.0 token is missing or expired. */
+    private AuthValues activeAuth() {
+        AuthProfile profile = activeProfile();
+        if (profile == null) {
+            return AuthValues.NONE;
+        }
+        if (profile.needsToken(System.currentTimeMillis())) {
+            setStatus("Auth profile \"" + profile.name() + "\" has no valid OAuth 2.0 token: click Get token.");
+        }
+        return profile.values();
+    }
+
+    private void openAuthProfiles() {
+        new AuthProfilesDialog(api.userInterface().swingUtils().suiteFrame(), authProfiles,
+                this::fetchToken, this::setAuthProfiles).setVisible(true);
+    }
+
+    private void setAuthProfiles(List<AuthProfile> profiles) {
+        String active = activeProfile() == null ? null : activeProfile().name();
+        authProfiles.clear();
+        authProfiles.addAll(profiles);
+        authBox.removeAllItems();
+        authBox.addItem("None");
+        int select = 0;
+        for (int i = 0; i < profiles.size(); i++) {
+            authBox.addItem(profiles.get(i).name());
+            if (profiles.get(i).name().equals(active)) {
+                select = i + 1;
+            }
+        }
+        authBox.setSelectedIndex(select);
+        updatePreview();
+    }
+
+    private void refreshActiveToken() {
+        AuthProfile profile = activeProfile();
+        if (profile == null || !profile.type().isOAuth2()) {
+            showError("Select an OAuth 2.0 auth profile first.");
+            return;
+        }
+        fetchToken(profile, updated -> {
+            for (int i = 0; i < authProfiles.size(); i++) {
+                if (authProfiles.get(i).name().equals(updated.name())) {
+                    authProfiles.set(i, authProfiles.get(i).withToken(updated.accessToken(), updated.expiresAtMillis()));
+                }
+            }
+            updatePreview();
+        });
+    }
+
+    /**
+     * Request an OAuth 2.0 token through Burp's networking on the worker (BApp rules 3
+     * and 5) and hand the updated profile back on the EDT. The response is untrusted
+     * and parsed by {@link OAuth2Client}; the token itself is never logged.
+     */
+    private void fetchToken(AuthProfile profile, java.util.function.Consumer<AuthProfile> onSuccess) {
+        String url = profile.tokenUrl();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            showError("The token URL must start with http:// or https://");
+            return;
+        }
+        setStatus("Requesting an OAuth 2.0 token for \"" + profile.name() + "\"...");
+        worker.submit("fetch oauth token", () -> {
+            HttpRequest request = HttpRequest.httpRequestFromUrl(url).withMethod("POST");
+            for (Map.Entry<String, String> h : OAuth2Client.requestHeaders(profile).entrySet()) {
+                request = request.withHeader(h.getKey(), h.getValue());
+            }
+            request = request.withBody(OAuth2Client.requestBody(profile));
+            HttpRequestResponse rr = api.http().sendRequest(request);
+            if (!rr.hasResponse()) {
+                showError("No response from the token endpoint.");
+                return;
+            }
+            short httpStatus = rr.response().statusCode();
+            try {
+                OAuth2Client.Token token = OAuth2Client.parseResponse(rr.response().bodyToString(),
+                        System.currentTimeMillis());
+                AuthProfile updated = profile.withToken(token.accessToken(), token.expiresAtMillis());
+                SwingUtilities.invokeLater(() -> {
+                    onSuccess.accept(updated);
+                    status.setText("Got an OAuth 2.0 token for \"" + profile.name() + "\". "
+                            + AuthProfilesDialog.describeToken(updated));
+                });
+            } catch (SpecException ex) {
+                showError("Token request failed (HTTP " + httpStatus + "): " + ex.getMessage());
+            }
+        });
     }
 
     private void applyFilter() {
@@ -440,10 +702,11 @@ final class SwaggerTab {
             return;
         }
         Map<String, String> headers = parseHeaders();
+        AuthValues auth = activeAuth();
         int sent = 0;
         for (Endpoint ep : withParamValues(selected)) {
             try {
-                sink.accept(dispatcher.toHttpRequest(ep, baseUrl, headers), ep);
+                sink.accept(dispatcher.toHttpRequest(ep, baseUrl, headers, auth), ep);
                 sent++;
             } catch (RuntimeException ex) {
                 api.logging().logToError("Failed to send " + ep.method() + " " + ep.path()
@@ -460,10 +723,11 @@ final class SwaggerTab {
             return null;
         }
         Map<String, String> headers = parseHeaders();
+        AuthValues auth = activeAuth();
         List<HttpRequest> requests = new ArrayList<>();
         for (Endpoint ep : withParamValues(selected)) {
             try {
-                requests.add(dispatcher.toHttpRequest(ep, baseUrl, headers));
+                requests.add(dispatcher.toHttpRequest(ep, baseUrl, headers, auth));
             } catch (RuntimeException ex) {
                 api.logging().logToError("Failed to build request for "
                         + ep.method() + " " + ep.path(), ex);

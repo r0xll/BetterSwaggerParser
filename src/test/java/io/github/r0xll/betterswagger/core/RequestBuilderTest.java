@@ -90,4 +90,21 @@ class RequestBuilderTest {
         assertEquals(8080, req.port);
         assertFalse(req.secure);
     }
+
+    @Test
+    void untrustedPathCannotBreakTheRequestLine() {
+        Endpoint evil = new Endpoint("GET", "/a b\r\nX-Injected: 1/café{x}", "",
+                java.util.List.of(), java.util.List.of(), null, null);
+        RequestBuilder.BuiltRequest req = builder.build(evil, "https://h.example.com", Map.of());
+        String requestLine = req.raw.substring(0, req.raw.indexOf("\r\n"));
+        assertEquals("GET /a%20b%0D%0AX-Injected:%201/caf%C3%A9%7Bx%7D HTTP/1.1", requestLine);
+        assertFalse(req.raw.contains("\r\nX-Injected: 1\r\n"));
+    }
+
+    @Test
+    void invalidMethodIsRefused() {
+        Endpoint evil = new Endpoint("GET / HTTP/1.1\r\nX: y\r\n", "/p", "",
+                java.util.List.of(), java.util.List.of(), null, null);
+        assertThrows(SpecException.class, () -> builder.build(evil, "https://h.example.com", Map.of()));
+    }
 }

@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.scanner.AuditConfiguration;
 import burp.api.montoya.scanner.BuiltInAuditConfiguration;
 import burp.api.montoya.scanner.audit.Audit;
+import io.github.r0xll.betterswagger.core.AuthValues;
 import io.github.r0xll.betterswagger.core.Endpoint;
 import io.github.r0xll.betterswagger.core.RequestBuilder;
 
@@ -30,8 +31,8 @@ final class RequestDispatcher {
         this.api = api;
     }
 
-    HttpRequest toHttpRequest(Endpoint endpoint, String baseUrl, Map<String, String> headers) {
-        RequestBuilder.BuiltRequest built = builder.build(endpoint, baseUrl, headers);
+    HttpRequest toHttpRequest(Endpoint endpoint, String baseUrl, Map<String, String> headers, AuthValues auth) {
+        RequestBuilder.BuiltRequest built = builder.build(endpoint, baseUrl, headers, auth);
         HttpService service = HttpService.httpService(built.host, built.port, built.secure);
         ByteArray bytes = ByteArray.byteArray(built.raw.getBytes(StandardCharsets.UTF_8));
         return HttpRequest.httpRequest(service, bytes);
