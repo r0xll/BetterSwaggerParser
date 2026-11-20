@@ -473,12 +473,16 @@ final class SwaggerTab {
         setStatus("Reading Proxy history for " + host + "...");
         worker.submit("fill from proxy history", () -> {
             ProxyValueHarvester harvester = new ProxyValueHarvester(endpoints, basePath);
-            int[] scanned = {0};
+            java.util.concurrent.atomic.AtomicInteger scanned = new java.util.concurrent.atomic.AtomicInteger();
             api.proxy().history(item -> {
-                scanned[0]++;
-                var service = item.httpService();
-                if (service.port() == port && host.equalsIgnoreCase(service.host())) {
-                    harvester.observe(item.finalRequest().path());
+                scanned.incrementAndGet();
+                try {
+                    var service = item.httpService();
+                    if (service.port() == port && host.equalsIgnoreCase(service.host())) {
+                        harvester.observe(item.finalRequest().path());
+                    }
+                } catch (RuntimeException ignored) {
+                    // A malformed history item must not stop the whole scan.
                 }
                 return false; // keep nothing: only strings leave this callback
             });
@@ -489,7 +493,7 @@ final class SwaggerTab {
                 }
             }));
             int matched = harvester.matched();
-            int total = scanned[0];
+            int total = scanned.get();
             SwingUtilities.invokeLater(() -> {
                 appendParamLines(lines, "From Proxy history (" + host + ")");
                 setStatus(lines.isEmpty()

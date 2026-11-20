@@ -100,7 +100,7 @@ public final class OpenApiExporter {
                 case COOKIE -> "cookie";
                 case FORM -> null; // folded into the request body, not a parameter
             };
-            if (in == null) {
+            if (in == null || ("header".equals(in) && OMITTED_HEADERS.contains(param.name().toLowerCase()))) {
                 continue;
             }
             ObjectNode p = nf.objectNode();
@@ -143,6 +143,15 @@ public final class OpenApiExporter {
         operation.putObject("responses").putObject("default").put("description", "Response");
         return operation;
     }
+
+    /**
+     * Header parameters left out of the export. OpenAPI 3.0 says Accept, Content-Type
+     * and Authorization header parameters are ignored anyway; leaving them (and the
+     * cookie headers) out also keeps credentials, such as a token resolved from a
+     * Postman environment, from being written into the exported file.
+     */
+    private static final java.util.Set<String> OMITTED_HEADERS =
+            java.util.Set.of("accept", "content-type", "authorization", "proxy-authorization", "cookie");
 
     private static final Pattern INTEGER = Pattern.compile("-?\\d{1,38}");
 

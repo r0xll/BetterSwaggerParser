@@ -168,4 +168,18 @@ class PostmanParserTest {
         assertThrows(SpecException.class,
                 () -> parser.parse(loader.load(TestSupport.fixture("petstore-oas30.yaml")), Map.of()));
     }
+
+    @Test
+    void exportDoesNotWriteCredentialHeaders() {
+        String json = "{\"info\":{\"name\":\"C\",\"schema\":\"https://schema.getpostman.com/json/collection/"
+                + "v2.1.0/collection.json\"},\"item\":[{\"name\":\"r\",\"request\":{\"method\":\"GET\","
+                + "\"header\":[{\"key\":\"Authorization\",\"value\":\"Bearer {{token}}\"},"
+                + "{\"key\":\"Cookie\",\"value\":\"sid={{sid}}\"},{\"key\":\"X-Trace\",\"value\":\"1\"}],"
+                + "\"url\":\"https://h.example.com/p\"}}]}";
+        ApiSpec spec = parser.parse(loader.load(json), Map.of("token", "s3cr3t-token", "sid", "abc123")).spec();
+        String exported = new OpenApiExporter().toJson(spec, "https://h.example.com", spec.endpoints());
+        assertFalse(exported.contains("s3cr3t-token"), exported);
+        assertFalse(exported.contains("abc123"), exported);
+        assertTrue(exported.contains("X-Trace"), "ordinary header parameters are still exported");
+    }
 }

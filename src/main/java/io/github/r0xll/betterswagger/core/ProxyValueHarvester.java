@@ -22,7 +22,8 @@ import java.util.regex.Pattern;
  * parts quoted, and indexed by segment count and first segment, so matching a
  * large history stays cheap and an untrusted template cannot inject a regex.
  * When several templates match, only the most specific (fewest placeholders)
- * captures, so {@code /pets/mine} is not taken as a {@code petId}.
+ * captures, so {@code /pets/mine} is not taken as a {@code petId}. Thread-safe,
+ * since the history filter's calling thread is not specified.
  */
 public final class ProxyValueHarvester {
 
@@ -68,7 +69,7 @@ public final class ProxyValueHarvester {
     }
 
     /** Feed one observed request target (path plus optional query string). */
-    public void observe(String pathAndQuery) {
+    public synchronized void observe(String pathAndQuery) {
         if (pathAndQuery == null || pathAndQuery.isEmpty()) {
             return;
         }
@@ -122,12 +123,12 @@ public final class ProxyValueHarvester {
     }
 
     /** Values found, by endpoint path template then parameter name. */
-    public Map<String, Map<String, String>> values() {
+    public synchronized Map<String, Map<String, String>> values() {
         return values;
     }
 
     /** How many observed requests matched an endpoint. */
-    public int matched() {
+    public synchronized int matched() {
         return matched;
     }
 
