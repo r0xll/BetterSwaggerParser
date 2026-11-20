@@ -16,13 +16,22 @@ surface through Repeater, Intruder, Organizer, the site map and the Scanner.
 - **Endpoint table** with a live filter, selectable base URL (from the spec's
   `servers` / `host`+`basePath`), and a custom-headers field applied to every
   request (e.g. `Authorization: Bearer ...`).
+- **Parameter values**: `name=value` lines (e.g. `petId=1337`) replace the
+  generated placeholder of every path, query, header or cookie parameter with
+  that name — in the preview, every send, and the OpenAPI export. Use it to plug
+  in real IDs from Proxy history so requests hit existing objects instead of
+  `0` / an all-zero UUID. **Add path parameters** pre-fills one line per path
+  parameter in the spec.
 - **Request preview** and one-click **Send to Repeater / Intruder / Organizer**,
   **Add to Site map** (issued through Burp networking), and **Active scan**
   (Burp Suite Professional).
 - **Export as OpenAPI**: write the loaded spec — or just the selected endpoints —
   back out as a normalized OpenAPI 3.0 JSON document, with `servers` pinned to the
   chosen base URL. Feed it into Burp's **Import API definition** for an API-only
-  scan. A Swagger 2.0 input is up-converted to OpenAPI 3.0 on export.
+  scan. A Swagger 2.0 input is up-converted to OpenAPI 3.0 on export. Parameters
+  keep their real `type` / `format` / `enum` with an example typed to match (your
+  parameter values included); a value that doesn't fit the declared type is
+  exported as a plain string so the example never contradicts its schema.
 - **Passive detection** of exposed API definitions: responses that are Swagger /
   OpenAPI documents are flagged as an informational scan issue (no extra traffic).
 

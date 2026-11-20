@@ -1,7 +1,9 @@
 package io.github.r0xll.betterswagger.core;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * One operation (method + path) extracted from a spec, plus everything needed to
@@ -47,4 +49,30 @@ public final class Endpoint {
     public String requestContentType() { return requestContentType; }
 
     public boolean hasBody() { return requestBody != null; }
+
+    /**
+     * This endpoint with user-supplied values for parameters of the given names
+     * (path, query, header and cookie; form fields live in the body). Lets a real
+     * ID such as {@code petId=1337} replace the generated placeholder. Returns
+     * {@code this} when nothing matches.
+     */
+    public Endpoint withParamValues(Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return this;
+        }
+        boolean changed = false;
+        List<Param> updated = new ArrayList<>(parameters.size());
+        for (Param p : parameters) {
+            String value = values.get(p.name());
+            if (value != null && p.in() != Param.Location.FORM) {
+                updated.add(p.withExampleValue(value));
+                changed = true;
+            } else {
+                updated.add(p);
+            }
+        }
+        return changed
+                ? new Endpoint(method, path, summary, updated, security, requestBody, requestContentType)
+                : this;
+    }
 }
