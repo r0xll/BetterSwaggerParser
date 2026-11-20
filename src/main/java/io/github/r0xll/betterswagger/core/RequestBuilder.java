@@ -75,7 +75,12 @@ public final class RequestBuilder {
             }
         }
 
-        String requestTarget = basePath + path;
+        if (!METHOD.matcher(endpoint.method()).matches()) {
+            throw new SpecException("Refusing to build a request with an invalid method.");
+        }
+        // The path template comes from an untrusted document (an OpenAPI path key or a
+        // Postman URL), so escape anything that could break the request line.
+        String requestTarget = escapePathChars(basePath + path);
         if (!query.isEmpty()) {
             requestTarget += "?" + String.join("&", query);
         }
@@ -123,6 +128,28 @@ public final class RequestBuilder {
 
     private static String stripTrailingSlash(String s) {
         return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
+    }
+
+    private static final java.util.regex.Pattern METHOD = java.util.regex.Pattern.compile("[A-Za-z]{1,20}");
+
+    /**
+     * Percent-encode characters that are not allowed in a request-target path:
+     * controls (CR/LF included), space, non-ASCII and the RFC 3986 "unsafe" set.
+     * {@code %}, {@code /}, {@code ?} and {@code #} are kept, so existing
+     * percent-encoding and the path's meaning are preserved.
+     */
+    static String escapePathChars(String path) {
+        StringBuilder out = new StringBuilder(path.length());
+        for (byte b : path.getBytes(StandardCharsets.UTF_8)) {
+            int c = b & 0xFF;
+            if (c <= 0x20 || c >= 0x7F || "\"<>\\^`{|}".indexOf(c) >= 0) {
+                out.append('%').append(Character.toUpperCase(Character.forDigit(c >> 4, 16)))
+                   .append(Character.toUpperCase(Character.forDigit(c & 0xF, 16)));
+            } else {
+                out.append((char) c);
+            }
+        }
+        return out.toString();
     }
 
     private static String encode(String value) {
